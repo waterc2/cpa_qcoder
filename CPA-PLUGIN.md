@@ -271,60 +271,58 @@ oauth-model-alias:
 
 上游仓库：`https://github.com/Zhengyuuuui/qoder2api`
 
-**推荐的 git 布局**（避免本地补丁和上游更新打架）：
+**当前 git 布局**（已配置好）：
 
-```
-main        ── 只跟踪上游（只允许 fast-forward）
-cpa-plugin  ── main + 我们的 4 处核心补丁 + cmd/cpa-plugin/ + queue.go 等
-```
+| remote | URL | 用途 |
+|---|---|---|
+| `origin` | `https://github.com/Zhengyuuuui/qoder2api.git` | 上游，只 fetch |
+| `mine` | `git@github.com:waterc2/cpa_qcoder.git` | 你的仓库，push |
 
-首次整理（把当前未提交的改动固定到分支）：
+| 分支 | 跟踪 | 内容 |
+|---|---|---|
+| `main` | `origin/main` | 纯净上游（只允许 fast-forward） |
+| `cpa-plugin` | `mine/main` | 上游 + 我们的 4 处核心补丁 + `cmd/cpa-plugin/` + `queue.go` 等 |
 
-```bash
-cd /home/brady/tool/qoder2api
+你的 GitHub 仓库 `main` 分支 = 本地的 `cpa-plugin` 分支（推送时用 `cpa-plugin:main`）。
 
-# 1. 备份当前可用产物
-cp dist/qoder-v0.1.0.so /tmp/qoder-v0.1.0.so.bak 2>/dev/null
+**日常开发**：改完在 `cpa-plugin` 分支提交并 `git push` 即可。
 
-# 2. 把本地改动提交到独立分支
-git checkout -b cpa-plugin
-git add -A
-git commit -m "feat: CPA plugin layer (cmd/cpa-plugin, queue recovery, core patches)"
-```
-
-之后的常规更新：
+**同步上游更新**：
 
 ```bash
 cd /home/brady/tool/qoder2api
 
 # 1. 看上游有什么新东西
-git fetch origin
-git log --oneline HEAD..origin/main
+ git fetch origin
+ git log --oneline main..origin/main
 
 # 2. 更新 main（快进）
-git checkout main
-git merge --ff-only origin/main
+ git checkout main
+ git merge --ff-only origin/main
 
 # 3. 把我们的分支 rebase 到新 main 上
-git checkout cpa-plugin
-git rebase main
-#    → 冲突点只会在 §2.4 那 4 个文件里，按"保留我们的补丁 + 接受上游其它改动"解决
+ git checkout cpa-plugin
+ git rebase main
+#    → 冲突点只会在 §2.4 那 4 个文件里，按“保留我们的补丁 + 接受上游其它改动”解决
 
 # 4. 自检 4 处补丁仍在
-grep -n "PollLoginOnce\|BuildAccountFromToken" account/oauth.go
-grep -n "InferenceBase" account/region.go
-grep -n "streamWithQueueRecovery\|func (b \*Bridge) Identity" internal/bridge/bridge.go
-grep -n "callGetCtx" internal/bridge/client.go
+ grep -n "PollLoginOnce\|BuildAccountFromToken" account/oauth.go
+ grep -n "InferenceBase" account/region.go
+ grep -n "streamWithQueueRecovery\|func (b \*Bridge) Identity" internal/bridge/bridge.go
+ grep -n "callGetCtx" internal/bridge/client.go
 
 # 5. 同步 baseprompt.json（如果上游改过）
-cmp baseprompt.json cmd/cpa-plugin/baseprompt.json \
-  || cp baseprompt.json cmd/cpa-plugin/baseprompt.json
+ cmp baseprompt.json cmd/cpa-plugin/baseprompt.json \
+   || cp baseprompt.json cmd/cpa-plugin/baseprompt.json
 
 # 6. 验证 + 构建 + 部署
-go build ./... && go vet ./... && go test ./...
-./scripts/build-cpa-plugin.sh 0.1.1
-cp dist/qoder-v0.1.1.so /home/brady/tool/cli-proxy-api-app/plugins/linux/amd64/
+ go build ./... && go vet ./... && go test ./...
+ ./scripts/build-cpa-plugin.sh 0.1.1
+ cp dist/qoder-v0.1.1.so /home/brady/tool/cli-proxy-api-app/plugins/linux/amd64/
 # 然后按 §3.3 重启
+
+# 7. 推到你自己的仓库
+ git push mine cpa-plugin:main
 ```
 
 > 如果上游把 `internal/bridge/bridge.go` 大改，优先用 `git rebase` 而不是 merge，
