@@ -517,10 +517,13 @@ func campaignsCheckin(deviceToken string, res *CheckinResult, host string, fp *a
 	if target == nil {
 		if alreadyClaimed {
 			res.Status = checkinStatusAlreadyClaimed
+			if benefitCampaign != nil && benefitCampaign.Benefit != nil && benefitCampaign.Benefit.Amount > 0 {
+				res.Amount = benefitCampaign.Benefit.Amount
+			}
 			res.Message = windowHint(res, "今日已领取")
 		} else {
 			res.Status = checkinStatusNoCampaign
-			res.Message = "无可用签到活动"
+			res.Message = "无可用签到活动（该账号尚未开通每日签到；需先在官方客户端领取一次）"
 			// 打印原始活动列表，便于排查「为何不下发 CLAIM_BENEFIT」。
 			// 已知原因（见 issue #4）：Global 账号首次领取前需携带官方真实
 			// cosy 设备指纹（machineid + machinetoken + machinetype），否则
@@ -669,8 +672,22 @@ func handleCheckin(w http.ResponseWriter, r *http.Request) {
 // ---------- 每日自动签到调度 ----------
 
 var (
-	checkinMu   sync.Mutex
-	checkinDone = map[string]bool{} // key: "YYYY-MM-DD HH:MM"，当日该时段已执行
+	checkinMu    sync.Mutex
+	checkinSlots = map[string]*checkinSlotState{} // key: "YYYY-MM-DD HH:MM"
+)
+
+// checkinSlotState 记录单个时段的尝试进度，避免每分钟重试上游。
+type checkinSlotState struct {
+	attempts int
+	lastRun  time.Time
+	done     bool
+}
+
+const (
+	// checkinMaxAttempts 是单个时段最多尝试次数（含首次）。
+	checkinMaxAttempts = 6
+	// checkinRetryInterval 是两次尝试之间的最小间隔。
+	checkinRetryInterval = 10 * time.Minute
 )
 
 // defaultCheckinTimes 未配置时的默认签到时间（保持原行为）。
@@ -721,6 +738,15 @@ func runScheduledCheckin() bool {
 	date := now.Format("2006-01-02")
 	nowMin := now.Hour()*60 + now.Minute()
 
+	// 清理昨日遗留的时段状态，避免 map 无界增长。
+	checkinMu.Lock()
+	for k := range checkinSlots {
+		if !strings.HasPrefix(k, date+" ") {
+			delete(checkinSlots, k)
+		}
+	}
+	checkinMu.Unlock()
+
 	ran := false
 	for _, t := range CheckinTimes(settings) {
 		h, m, ok := parseHHMM(t)
@@ -733,15 +759,29 @@ func runScheduledCheckin() bool {
 			continue // 还没到点
 		}
 		key := date + " " + t
+
 		checkinMu.Lock()
-		done := checkinDone[key]
-		checkinMu.Unlock()
-		if done {
+		st := checkinSlots[key]
+		if st != nil && st.done {
+			checkinMu.Unlock()
 			continue
 		}
+		// 到点后立即执行一次，之后按 checkinRetryInterval 节流重试。
+		if st != nil && time.Since(st.lastRun) < checkinRetryInterval {
+			checkinMu.Unlock()
+			continue
+		}
+		if st != nil && st.attempts >= checkinMaxAttempts {
+			st.done = true
+			checkinMu.Unlock()
+			continue
+		}
+		checkinMu.Unlock()
 
 		logger.Info("[Checkin] auto checkin triggered at %s (slot %s)", now.Format("15:04:05"), t)
 		results := CheckinAll()
+		// 只有「瞬时错误」和「暂无活动」值得重试；no_token 是 PAT 账号的
+		// 固有状态，重试永远不会成功，直接视为终态。
 		claimed, already, retryable := 0, 0, 0
 		for _, r := range results {
 			switch r.Status {
@@ -749,19 +789,26 @@ func runScheduledCheckin() bool {
 				claimed++
 			case checkinStatusAlreadyClaimed:
 				already++
-			case checkinStatusError, checkinStatusNoCampaign, checkinStatusNoToken:
+			case checkinStatusError, checkinStatusNoCampaign:
 				retryable++
 			}
 		}
+
 		checkinMu.Lock()
-		if retryable == 0 || nowMin >= slotMin+120 {
-			// 无可重试状态，或已过该时段 2 小时（兜底，避免无限轮询）
-			checkinDone[key] = true
+		if st == nil {
+			st = &checkinSlotState{}
+			checkinSlots[key] = st
+		}
+		st.attempts++
+		st.lastRun = time.Now()
+		if retryable == 0 || st.attempts >= checkinMaxAttempts {
+			// 无可重试状态，或已达最大尝试次数
+			st.done = true
 			logger.Info("[Checkin] slot %s finished: %d claimed, %d already, %d retryable, total %d",
 				t, claimed, already, retryable, len(results))
 		} else {
-			logger.Info("[Checkin] slot %s partial: %d claimed, %d already, %d retryable -> retry next tick",
-				t, claimed, already, retryable)
+			logger.Info("[Checkin] slot %s partial: %d claimed, %d already, %d retryable -> retry in %s",
+				t, claimed, already, retryable, checkinRetryInterval)
 		}
 		checkinMu.Unlock()
 		ran = true
