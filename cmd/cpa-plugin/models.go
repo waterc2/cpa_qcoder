@@ -49,19 +49,19 @@ func modelInfoFor(m bridge.QoderModel) pluginapi.ModelInfo {
 		maxOut = 16384
 	}
 	return pluginapi.ModelInfo{
-		ID:                  m.Key,
-		Object:              "model",
-		Created:             1687864820,
-		OwnedBy:             "qoder",
-		Type:                "chat",
-		DisplayName:         firstNonEmpty(m.DisplayName, m.Key),
-		Name:                m.Key,
-		InputTokenLimit:     int64(ctx),
-		ContextLength:       int64(ctx),
-		MaxCompletionTokens: int64(maxOut),
-		OutputTokenLimit:    int64(maxOut),
-		SupportedInputModalities:  []string{"text", "image"},
-		SupportedOutputModalities: []string{"text"},
+		ID:                         m.Key,
+		Object:                     "model",
+		Created:                    1687864820,
+		OwnedBy:                    "qoder",
+		Type:                       "chat",
+		DisplayName:                firstNonEmpty(m.DisplayName, m.Key),
+		Name:                       m.Key,
+		InputTokenLimit:            int64(ctx),
+		ContextLength:              int64(ctx),
+		MaxCompletionTokens:        int64(maxOut),
+		OutputTokenLimit:           int64(maxOut),
+		SupportedInputModalities:   []string{"text", "image"},
+		SupportedOutputModalities:  []string{"text"},
 		SupportedGenerationMethods: []string{"chat.completions"},
 	}
 }

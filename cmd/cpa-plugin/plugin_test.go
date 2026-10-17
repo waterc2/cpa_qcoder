@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"os"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
@@ -279,5 +280,88 @@ func TestEnsureModelEnabled(t *testing.T) {
 	}
 	if err := ensureModelEnabled(&qoderRequest{model: "auto", clientModel: "qoder-auto"}); err != nil {
 		t.Fatalf("enabled model rejected: %v", err)
+	}
+}
+
+func TestDetectAuthMode(t *testing.T) {
+	cases := map[string]string{
+		`{"device_token":"dt-a"}`: "oauth",
+		"dt-abc":                  "oauth",
+		"drt-xyz":                 "oauth",
+		"pt-123":                  "pat",
+		"":                        "pat",
+	}
+	for secret, want := range cases {
+		if got := detectAuthMode(secret); got != want {
+			t.Fatalf("detectAuthMode(%q) = %q, want %q", secret, got, want)
+		}
+	}
+}
+
+// TestConfigUpdatePersists verifies panel config changes are written to
+// plugin_settings.json and reloaded on the next configure.
+func TestConfigUpdatePersists(t *testing.T) {
+	account.SetDataRoot(t.TempDir())
+	configMu.Lock()
+	activeConfig = pluginConfig{CheckinTimes: []string{"10:00"}, DefaultRegion: "global"}
+	configMu.Unlock()
+	defer func() {
+		configMu.Lock()
+		activeConfig = pluginConfig{CheckinTimes: []string{"10:00"}, DefaultRegion: "global"}
+		configMu.Unlock()
+	}()
+
+	body, _ := json.Marshal(map[string]any{
+		"checkin_auto":     true,
+		"checkin_times":    []string{"08:00", "20:00"},
+		"checkin_on_start": true,
+		"default_region":   "cn",
+	})
+	if out := handleConfigUpdate(pluginapi.ManagementRequest{Body: body}); out["error"] != nil {
+		t.Fatalf("update error: %v", out["error"])
+	}
+	if _, err := os.Stat(persistedConfigPath()); err != nil {
+		t.Fatalf("settings file not written: %v", err)
+	}
+
+	// Reset and reload as if CPA restarted.
+	configMu.Lock()
+	activeConfig = pluginConfig{CheckinTimes: []string{"10:00"}, DefaultRegion: "global"}
+	configMu.Unlock()
+	loadPersistedConfig()
+
+	cfg := currentConfig()
+	if !cfg.AutoCheckin || !cfg.CheckinOnStart {
+		t.Fatalf("booleans not restored: %+v", cfg)
+	}
+	if cfg.DefaultRegion != "cn" {
+		t.Fatalf("region = %q, want cn", cfg.DefaultRegion)
+	}
+	if len(cfg.CheckinTimes) != 2 || cfg.CheckinTimes[0] != "08:00" {
+		t.Fatalf("times = %v", cfg.CheckinTimes)
+	}
+}
+
+func TestParseSecretTokens(t *testing.T) {
+	cases := []struct {
+		name    string
+		secret  string
+		wantDev string
+		wantRef string
+	}{
+		{"json", `{"device_token":"dt-abc","refresh_token":"drt-xyz"}`, "dt-abc", "drt-xyz"},
+		{"json spaces", `  {"device_token":"dt-abc","refresh_token":"drt-xyz"}  `, "dt-abc", "drt-xyz"},
+		{"bare device", "dt-abc", "dt-abc", ""},
+		{"bare refresh", "drt-xyz", "", "drt-xyz"},
+		{"pat", "pt-123", "", ""},
+		{"empty", "", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dev, ref := parseSecretTokens(tc.secret)
+			if dev != tc.wantDev || ref != tc.wantRef {
+				t.Fatalf("parseSecretTokens(%q) = (%q, %q), want (%q, %q)", tc.secret, dev, ref, tc.wantDev, tc.wantRef)
+			}
+		})
 	}
 }

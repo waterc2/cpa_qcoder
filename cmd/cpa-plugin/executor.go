@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
@@ -141,6 +142,15 @@ func buildQoderRequest(raw []byte, modelOverride string, wantStream bool) (*qode
 
 // --- non-stream execute -----------------------------------------------------
 
+// execTimeout bounds a single upstream generation so a stalled connection
+// cannot pin a goroutine forever. The host does not pass a cancelable context
+// through the plugin RPC, so this is the only backstop.
+const execTimeout = 30 * time.Minute
+
+func newExecContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), execTimeout)
+}
+
 func handleExecExecute(raw []byte) ([]byte, error) {
 	var req pluginapi.ExecutorRequest
 	if err := json.Unmarshal(raw, &req); err != nil {
@@ -169,7 +179,8 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 	var full strings.Builder
 	var toolCalls []interface{}
 	var inTok, outTok int
-	ctx := context.Background()
+	ctx, cancel := newExecContext()
+	defer cancel()
 	err = b.CallQoderWithOpts(ctx, qr.agent, qr.messages, qr.model, qr.tools, qr.opts, func(d bridge.Delta) {
 		if d.Err != nil {
 			return
@@ -254,13 +265,15 @@ func handleExecStream(raw []byte) ([]byte, error) {
 
 	// Async: emit chunks through the host stream and return immediately.
 	if req.StreamID != "" {
-		ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := newExecContext()
 		go pumpStream(ctx, cancel, req.StreamID, b, qr, frame)
 		return okEnvelope(streamResponse{Headers: headers})
 	}
 
 	// Sync: collect all chunks and return them in one response.
-	chunks, err := collectStream(context.Background(), b, qr, frame)
+	ctx, cancel := newExecContext()
+	defer cancel()
+	chunks, err := collectStream(ctx, b, qr, frame)
 	if err != nil {
 		msg, et := bridge.FriendlyError(err)
 		if et == "" {

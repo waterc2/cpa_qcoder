@@ -49,8 +49,24 @@ type pendingOAuth struct {
 
 var (
 	pendingMu sync.Mutex
-	pending   *pendingOAuth
+	// pending holds every in-flight OAuth login, keyed by loginID, so multiple
+	// concurrent logins (e.g. several operators or repeated Add-auth dialogs) do
+	// not cancel each other.
+	pending = map[string]*pendingOAuth{}
 )
+
+// pruneExpiredPendingLocked cancels and drops timed-out sessions. Caller must
+// hold pendingMu.
+func pruneExpiredPendingLocked(now time.Time) {
+	for id, p := range pending {
+		if p == nil || now.After(p.deadline) {
+			if p != nil {
+				p.cancel()
+			}
+			delete(pending, id)
+		}
+	}
+}
 
 // StartLogin 启动 OAuth 登录流程
 func StartLogin(region Region) (*OAuthSession, error) {
@@ -72,11 +88,9 @@ func StartLogin(region Region) (*OAuthSession, error) {
 	logger.Info("OAuth: StartLogin loginID=%s region=%s", loginID, region)
 
 	pendingMu.Lock()
-	if pending != nil {
-		pending.cancel()
-	}
+	pruneExpiredPendingLocked(time.Now())
 	ctx, cancel := context.WithCancel(context.Background())
-	pending = &pendingOAuth{
+	pending[loginID] = &pendingOAuth{
 		loginID:  loginID,
 		nonce:    nonce,
 		verifier: verifier,
@@ -95,13 +109,20 @@ func WaitLogin(loginID string) (*Account, error) {
 	logger.Debug("OAuth: WaitLogin called loginID=%s", loginID)
 
 	pendingMu.Lock()
-	p := pending
+	p := pending[loginID]
 	pendingMu.Unlock()
 
-	if p == nil || p.loginID != loginID {
+	if p == nil {
 		logger.Error("OAuth: no pending login for id %s", loginID)
 		return nil, fmt.Errorf("no pending login for id %s", loginID)
 	}
+	defer func() {
+		pendingMu.Lock()
+		if pending[loginID] == p {
+			delete(pending, loginID)
+		}
+		pendingMu.Unlock()
+	}()
 
 	ep := GetEndpoints(p.region)
 
@@ -128,9 +149,6 @@ func WaitLogin(loginID string) (*Account, error) {
 				logger.Error("OAuth: Build account error: %v", err)
 				return nil, err
 			}
-			pendingMu.Lock()
-			pending = nil
-			pendingMu.Unlock()
 			logger.Info("OAuth: Success! Account: %s", acct.Name)
 			return acct, nil
 		}
@@ -144,10 +162,10 @@ func WaitLogin(loginID string) (*Account, error) {
 // CPA plugin needs because the host drives the poll cadence itself.
 func PollLoginOnce(loginID string) (*Account, string, bool, error) {
 	pendingMu.Lock()
-	p := pending
+	p := pending[loginID]
 	pendingMu.Unlock()
 
-	if p == nil || p.loginID != loginID {
+	if p == nil {
 		return nil, "", false, fmt.Errorf("no pending login for id %s", loginID)
 	}
 	if time.Now().After(p.deadline) {
@@ -170,8 +188,8 @@ func PollLoginOnce(loginID string) (*Account, string, bool, error) {
 	}
 
 	pendingMu.Lock()
-	if pending == p {
-		pending = nil
+	if pending[loginID] == p {
+		delete(pending, loginID)
 	}
 	pendingMu.Unlock()
 
@@ -185,9 +203,9 @@ func PollLoginOnce(loginID string) (*Account, string, bool, error) {
 func CancelLogin(loginID string) {
 	pendingMu.Lock()
 	defer pendingMu.Unlock()
-	if pending != nil && pending.loginID == loginID {
-		pending.cancel()
-		pending = nil
+	if p, ok := pending[loginID]; ok {
+		p.cancel()
+		delete(pending, loginID)
 	}
 }
 
@@ -349,9 +367,6 @@ func FetchQuota(token string, region Region) (*QuotaInfo, error) {
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
 
-	fmt.Printf("[QUOTA DEBUG] API URL: %s\n", ep.QuotaEndpoint)
-	fmt.Printf("[QUOTA DEBUG] Raw response: %s\n", string(raw))
-
 	var result map[string]interface{}
 	if err := json.Unmarshal(raw, &result); err != nil {
 		return nil, err
@@ -365,16 +380,10 @@ func FetchQuota(token string, region Region) (*QuotaInfo, error) {
 
 	if uq := extractBucket(result, "userQuota"); uq != nil {
 		info.UserQuota = uq
-		fmt.Printf("[QUOTA DEBUG] userQuota found: %+v\n", uq)
-	} else {
-		fmt.Printf("[QUOTA DEBUG] userQuota NOT found in response\n")
 	}
 
 	if aq := extractBucket(result, "addOnQuota"); aq != nil {
 		info.AddonQuota = aq
-		fmt.Printf("[QUOTA DEBUG] addonQuota found: %+v\n", aq)
-	} else {
-		fmt.Printf("[QUOTA DEBUG] addonQuota NOT found in response\n")
 	}
 
 	return info, nil

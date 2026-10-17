@@ -80,6 +80,8 @@ type Bridge struct {
 	pool *Pool
 	// chatStreamURL 测试注入用：非空时覆盖 region 对应的上游 chat 流地址
 	chatStreamURL string
+	// email 是解析到的账号邮箱（用于插件侧 auth 标签），可能为空。
+	email string
 }
 
 // QoderModel 是返回给前端的精简模型条目（仅保留下拉选择必要字段）
@@ -112,7 +114,7 @@ func NewBridge(pat string, region account.Region, templateBase map[string]interf
 	logger.Info("Bridge using token: %s (prefix: %s)", tokenPrefix(pat, 10), tokenPrefix(pat, 4))
 
 	var identity cosy.AuthIdentity
-	var name, id string
+	var name, id, email string
 
 	deviceToken, refreshToken := ParseOAuthSecret(pat)
 	if strings.HasPrefix(deviceToken, "dt-") {
@@ -122,6 +124,7 @@ func NewBridge(pat string, region account.Region, templateBase map[string]interf
 		}
 		name = StrVal(userInfo, "name")
 		id = ResolveOAuthUserID(userInfo)
+		email = strings.ToLower(StrVal(userInfo, "email"))
 		identity = cosy.AuthIdentity{
 			Name:               name,
 			Aid:                id,
@@ -142,6 +145,7 @@ func NewBridge(pat string, region account.Region, templateBase map[string]interf
 		}
 		name = StrVal(jt, "name")
 		id = StrVal(jt, "id")
+		email = strings.ToLower(StrVal(jt, "email"))
 		identity = cosy.AuthIdentity{
 			Name:               name,
 			Aid:                id,
@@ -170,6 +174,7 @@ func NewBridge(pat string, region account.Region, templateBase map[string]interf
 		client:       client,
 		region:       region,
 		templateBase: templateBase,
+		email:        email,
 	}, nil
 }
 
@@ -181,6 +186,14 @@ func (b *Bridge) Identity() cosy.AuthIdentity {
 		return cosy.AuthIdentity{}
 	}
 	return b.sess.Identity
+}
+
+// Email returns the account email resolved while building the bridge, if any.
+func (b *Bridge) Email() string {
+	if b == nil {
+		return ""
+	}
+	return b.email
 }
 
 // Region returns the region this bridge was built for.

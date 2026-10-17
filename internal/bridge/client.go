@@ -109,10 +109,10 @@ func (c *BearerClient) callGetCtx(ctx context.Context, fullURL string) (map[stri
 		return nil, NewUpstreamError(resp.StatusCode, string(data))
 	}
 	preview := string(data)
-	if len(preview) > 2000 {
-		preview = preview[:2000]
+	if len(preview) > 512 {
+		preview = preview[:512]
 	}
-	logger.Info("callGet %s response (%d bytes): %s", fullURL, len(data), preview)
+	logger.Debug("callGet %s response (%d bytes): %s", fullURL, len(data), preview)
 	var result map[string]interface{}
 	err = json.Unmarshal(data, &result)
 	return result, err

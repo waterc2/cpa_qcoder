@@ -217,10 +217,10 @@ func (b *Bridge) FinishQueue(slot *Slot, requestSetID, modelKey, userID string, 
 		return fmt.Errorf("no inference base for region %s", slot.Region)
 	}
 	payload, _ := json.Marshal(map[string]interface{}{
-		"model_key":     modelKey,
+		"model_key":      modelKey,
 		"request_set_id": requestSetID,
-		"user_id":       userID,
-		"time_consumed": timeConsumedMs,
+		"user_id":        userID,
+		"time_consumed":  timeConsumedMs,
 	})
 	body := map[string]interface{}{
 		"payload":       string(payload),

@@ -74,9 +74,12 @@ import (
 )
 
 const (
-	providerName  = "qoder"
-	authFileName  = "qoder.json"
-	pluginLogoURL = "https://raw.githubusercontent.com/Zhengyuuuui/qoder2api/main/webconsole/favicon.ico"
+	providerName = "qoder"
+	authFileName = "qoder.json"
+	// pluginLogoURL is an inline SVG data URI. The previous value pointed at
+	// raw.githubusercontent.com/.../webconsole/favicon.ico, which does not
+	// exist (404), so the panel/auth UI showed a broken image.
+	pluginLogoURL = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI2NCIgaGVpZ2h0PSI2NCIgdmlld0JveD0iMCAwIDY0IDY0Ij48cmVjdCB3aWR0aD0iNjQiIGhlaWdodD0iNjQiIHJ4PSIxNCIgZmlsbD0iIzRmOGNmZiIvPjxwYXRoIGQ9Ik0zMiAxNGM5LjkgMCAxOCA4LjEgMTggMThzLTguMSAxOC0xOCAxOC0xOC04LjEtMTgtMTggOC4xLTE4IDE4LTE4em0wIDhhMTAgMTAgMCAxIDAgMCAyMCAxMCAxMCAwIDAgMCAwLTIweiIgZmlsbD0iI2ZmZiIvPjxyZWN0IHg9IjM4IiB5PSIzOCIgd2lkdGg9IjE0IiBoZWlnaHQ9IjciIHJ4PSIzLjUiIHRyYW5zZm9ybT0icm90YXRlKDQ1IDM4IDM4KSIgZmlsbD0iI2ZmZiIvPjwvc3ZnPg=="
 )
 
 // pluginVersion is the release version. Overridable with -ldflags -X.
@@ -89,11 +92,10 @@ var hostAPI *C.cliproxy_host_api
 // pluginConfig holds the per-plugin config delivered via plugin.register /
 // plugin.reconfigure (plugins.configs.qoder.*).
 type pluginConfig struct {
-	AutoCheckin      bool
-	CheckinTimes     []string
-	CheckinOnStart   bool
-	DefaultRegion    string
-	UsageReportURL   string
+	AutoCheckin    bool
+	CheckinTimes   []string
+	CheckinOnStart bool
+	DefaultRegion  string
 }
 
 var (
@@ -286,8 +288,8 @@ type registrationCapability struct {
 }
 
 type streamResponse struct {
-	Headers map[string][]string                `json:"headers,omitempty"`
-	Chunks  []pluginapi.ExecutorStreamChunk    `json:"chunks,omitempty"`
+	Headers map[string][]string             `json:"headers,omitempty"`
+	Chunks  []pluginapi.ExecutorStreamChunk `json:"chunks,omitempty"`
 }
 
 func pluginRegistration() registration {
@@ -402,13 +404,13 @@ func configure(raw []byte) {
 	if s, ok := getStr("default_region"); ok && s != "" {
 		activeConfig.DefaultRegion = s
 	}
-	if s, ok := getStr("usage_report_url"); ok {
-		activeConfig.UsageReportURL = s
-	}
-	cfg := activeConfig
 	configMu.Unlock()
 
-	if cfg.CheckinOnStart {
+	// Values saved from the management panel override the host config so they
+	// survive a CPA restart.
+	loadPersistedConfig()
+
+	if currentConfig().CheckinOnStart {
 		go runScheduledCheckin()
 	}
 }

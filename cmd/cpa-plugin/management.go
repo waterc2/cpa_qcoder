@@ -71,7 +71,7 @@ func managementRegistration() managementRegistrationResponse {
 			{Method: http.MethodGet, Path: base + "/checkin/config", Description: "Get auto check-in configuration."},
 			{Method: http.MethodPost, Path: base + "/checkin/config", Description: "Update auto check-in configuration."},
 			{Method: http.MethodGet, Path: base + "/models/config", Description: "List selectable models and which are exposed."},
-		{Method: http.MethodPost, Path: base + "/models/config", Description: "Save model selection (body: {disabled: [modelId,...]})."},
+			{Method: http.MethodPost, Path: base + "/models/config", Description: "Save model selection (body: {disabled: [modelId,...]})."},
 		},
 		Resources: []resourceRoute{
 			{Path: "/panel", Menu: "Qoder", Description: "Qoder account and check-in dashboard."},
@@ -379,9 +379,7 @@ func handleImport(req pluginapi.ManagementRequest) map[string]any {
 		return map[string]any{"error": "secret is required"}
 	}
 	sa := &storedAuth{Secret: secret, Region: body.Region, Name: body.Name}
-	if sa.AuthMode == "" {
-		sa.AuthMode = "pat"
-	}
+	sa.AuthMode = detectAuthMode(secret)
 	if err := resolveAccountInfo(sa); err != nil {
 		return map[string]any{"error": "凭证校验失败: " + err.Error()}
 	}
@@ -439,8 +437,10 @@ func configView() map[string]any {
 
 func handleConfigUpdate(req pluginapi.ManagementRequest) map[string]any {
 	var body struct {
-		CheckinAuto  *bool    `json:"checkin_auto"`
-		CheckinTimes []string `json:"checkin_times"`
+		CheckinAuto    *bool    `json:"checkin_auto"`
+		CheckinTimes   []string `json:"checkin_times"`
+		CheckinOnStart *bool    `json:"checkin_on_start"`
+		DefaultRegion  string   `json:"default_region"`
 	}
 	if err := json.Unmarshal(req.Body, &body); err != nil {
 		return map[string]any{"error": "invalid body: " + err.Error()}
@@ -452,7 +452,14 @@ func handleConfigUpdate(req pluginapi.ManagementRequest) map[string]any {
 	if len(body.CheckinTimes) > 0 {
 		activeConfig.CheckinTimes = body.CheckinTimes
 	}
+	if body.CheckinOnStart != nil {
+		activeConfig.CheckinOnStart = *body.CheckinOnStart
+	}
+	if r := strings.TrimSpace(body.DefaultRegion); r != "" {
+		activeConfig.DefaultRegion = r
+	}
 	configMu.Unlock()
+	savePersistedConfig()
 	return configView()
 }
 

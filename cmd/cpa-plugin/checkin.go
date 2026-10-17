@@ -311,7 +311,13 @@ func extractDeviceToken(secret string) string {
 		}
 		return ""
 	}
-	return secret
+	// Only a bare device token can authenticate the check-in/quota endpoints.
+	// A bare PAT (pt-...) is NOT a device token: returning it here made the
+	// callers send it as a Bearer token and fail with a confusing 401.
+	if strings.HasPrefix(secret, "dt-") {
+		return secret
+	}
+	return ""
 }
 
 func finalizeCheckin(accountID string, r CheckinResult) CheckinResult {
@@ -433,6 +439,9 @@ func campaignsCheckin(deviceToken string, res *CheckinResult, host string, fp *c
 		} else {
 			res.Status = checkinStatusNoCampaign
 			res.Message = "无可用签到活动"
+			if fp == nil {
+				res.Message += "（若为国际版账号，需在 auth 文件中提供从官方客户端抓包得到的 checkin_fingerprint）"
+			}
 			actionTypes := make([]string, 0, len(campaigns))
 			for i := range campaigns {
 				actionTypes = append(actionTypes, campaigns[i].ActionType+"/"+campaigns[i].ClaimStatus)

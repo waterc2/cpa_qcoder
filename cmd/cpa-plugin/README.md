@@ -134,6 +134,9 @@ notes for details.
 cmd/cpa-plugin/
   main.go        C ABI + RPC dispatch + registration + config
   auth.go        credential parsing, auth.parse/login/refresh
+  refresh.go     device-token refresh (/api/v1/deviceToken/refresh)
+  settings.go    panel config persistence (plugin_settings.json)
+  modelstate.go  model enable/disable denylist (models.json)
   models.go      model.static / model.for_auth
   executor.go    execute / execute_stream + host stream bridge
   checkin.go     check-in core + scheduler

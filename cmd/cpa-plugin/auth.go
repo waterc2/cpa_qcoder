@@ -166,6 +166,24 @@ func parseStored(raw []byte) (*storedAuth, error) {
 	return sa, nil
 }
 
+// detectAuthMode classifies a raw secret as OAuth or PAT without building a
+// bridge. OAuth secrets are either the stored JSON payload
+// ({"device_token":...,"refresh_token":...}) or bare dt-/drt- tokens;
+// everything else is a PAT.
+func detectAuthMode(secret string) string {
+	s := strings.TrimSpace(secret)
+	if s == "" {
+		return "pat"
+	}
+	if strings.HasPrefix(s, "{") {
+		return "oauth"
+	}
+	if strings.HasPrefix(s, "dt-") || strings.HasPrefix(s, "drt-") {
+		return "oauth"
+	}
+	return "pat"
+}
+
 // authFileDoc builds the on-disk auth document: provider fields at the top
 // level plus the routing metadata the host needs (type/provider/logo).
 func authFileDoc(sa *storedAuth) []byte {
@@ -190,6 +208,11 @@ func toAuthData(sa *storedAuth) pluginapi.AuthData {
 		"provider": providerName,
 		"logo":     pluginLogoURL,
 		"region":   string(sa.region()),
+	}
+	// Ask the host's auto-refresh loop to rotate OAuth device tokens daily.
+	// The loop reads this from auth metadata; PATs cannot be refreshed.
+	if detectAuthMode(sa.Secret) == "oauth" {
+		meta["refresh_interval_seconds"] = 86400
 	}
 	if sa.Name != "" {
 		meta["name"] = sa.Name
@@ -230,6 +253,9 @@ func resolveAccountInfo(sa *storedAuth) error {
 	}
 	if sa.UserType == "" {
 		sa.UserType = id.UserType
+	}
+	if sa.Email == "" {
+		sa.Email = strings.ToLower(b.Email())
 	}
 	if sa.AccountID == "" {
 		return fmt.Errorf("upstream did not return an account id (credential may be invalid)")
@@ -391,10 +417,10 @@ func activeRegion(meta map[string]any) string {
 // auth.refresh
 // -----------------------------------------------------------------------------
 
-// handleRefreshAuth re-validates and returns the credential. Qoder device
-// tokens are long-lived and there is no dedicated refresh endpoint in the
-// standalone gateway, so the record is returned unchanged with a deferred
-// next-refresh so the host does not poll aggressively.
+// handleRefreshAuth exchanges the stored refresh_token for a fresh device
+// token via the official /api/v1/deviceToken/refresh endpoint. Qoder rotates
+// the refresh token on every call, so the updated secret is returned to the
+// host for persistence.
 func handleRefreshAuth(raw []byte) ([]byte, error) {
 	var req pluginapi.AuthRefreshRequest
 	if err := json.Unmarshal(raw, &req); err != nil {
@@ -404,12 +430,67 @@ func handleRefreshAuth(raw []byte) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("refresh: %w", err)
 	}
-	// Keep host metadata (disabled, note, ...) intact.
+
+	_, refreshToken := parseSecretTokens(sa.Secret)
+	// PATs and secrets without a refresh token cannot be refreshed; return the
+	// record unchanged and defer the next attempt.
+	if strings.EqualFold(sa.AuthMode, "pat") || refreshToken == "" {
+		return unchangedRefresh(sa), nil
+	}
+
+	var fp *account.CheckinFingerprint
+	if sa.Fingerprint != nil {
+		fp = &account.CheckinFingerprint{
+			MachineID:    sa.Fingerprint.MachineID,
+			MachineToken: sa.Fingerprint.MachineToken,
+			MachineType:  sa.Fingerprint.MachineType,
+			MachineCode:  sa.Fingerprint.MachineCode,
+			Hostname:     sa.Fingerprint.Hostname,
+			MachineOS:    sa.Fingerprint.MachineOS,
+			Version:      sa.Fingerprint.Version,
+		}
+	}
+
+	res, err := refreshDeviceToken(sa.region(), refreshToken, fp)
+	if err != nil {
+		return nil, fmt.Errorf("refresh: %w", err)
+	}
+	if res.RefreshToken == "" {
+		res.RefreshToken = refreshToken // server did not rotate; keep the old one
+	}
+	payload, _ := json.Marshal(map[string]string{
+		"device_token":  res.DeviceToken,
+		"refresh_token": res.RefreshToken,
+	})
+	sa.Secret = string(payload)
+
+	// Schedule the next refresh a little before the token expires.
+	next := time.Now().Add(12 * time.Hour)
+	if t, perr := time.Parse(time.RFC3339, res.ExpiresAt); perr == nil {
+		next = t.Add(-30 * time.Minute)
+		if next.Before(time.Now().Add(time.Minute)) {
+			next = time.Now().Add(time.Minute)
+		}
+	}
+
 	ad := toAuthData(sa)
 	ad.ID = ""
 	ad.FileName = ""
 	return okEnvelope(pluginapi.AuthRefreshResponse{
 		Auth:             ad,
+		NextRefreshAfter: next,
+	})
+}
+
+// unchangedRefresh returns the credential as-is with a deferred next-refresh so
+// the host does not poll aggressively.
+func unchangedRefresh(sa *storedAuth) []byte {
+	ad := toAuthData(sa)
+	ad.ID = ""
+	ad.FileName = ""
+	out, _ := okEnvelope(pluginapi.AuthRefreshResponse{
+		Auth:             ad,
 		NextRefreshAfter: time.Now().Add(24 * time.Hour),
 	})
+	return out
 }

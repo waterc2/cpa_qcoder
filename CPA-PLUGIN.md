@@ -104,18 +104,22 @@
 
 | 文件 | 补丁 | 为什么需要 |
 |---|---|---|
-| `account/oauth.go` | 新增 `PollLoginOnce()`、`BuildAccountFromToken()`；`buildAccountFromToken` 拆出落盘逻辑 | 插件由 CPA 宿主驱动轮询节奏，且凭证存 host 不落 qoder2api 文件 |
+| `account/oauth.go` | 新增 `PollLoginOnce()`、`BuildAccountFromToken()`；`buildAccountFromToken` 拆出落盘逻辑；`pending` 由单值改为 `map[loginID]*pendingOAuth`（支持并发登录）；删除 `FetchQuota` 里的 `[QUOTA DEBUG]` 打印 | 插件由 CPA 宿主驱动轮询节奏；并发登录互不取消；避免污染 stdout/app.log |
 | `account/region.go` | `Endpoints` 新增 `InferenceBase` 字段（global/cn） | 队列轮询需要推理网关根地址 |
-| `internal/bridge/bridge.go` | 新增 `Identity()`、`Region()`；改用 `streamWithQueueRecovery`；补 `x-request-set-id`/`x-session-id` 头 | 队列恢复 + 请求头对齐官方 |
-| `internal/bridge/client.go` | 新增 `callGetCtx()`（`callGet` 委托给它） | 队列轮询需要可取消的 GET |
+| `internal/bridge/bridge.go` | 新增 `Identity()`、`Region()`、`Email()`；改用 `streamWithQueueRecovery`；补 `x-request-set-id`/`x-session-id` 头 | 队列恢复 + 请求头对齐官方 + 插件侧 auth 标签 |
+| `internal/bridge/client.go` | 新增 `callGetCtx()`（`callGet` 委托给它）；`callGet` 响应日志降为 Debug 并截断到 512B | 队列轮询需要可取消的 GET；避免 60KB 模型列表刷 Info 日志 |
 | `go.mod` | `go 1.22 → 1.26.0`，新增 `CLIProxyAPI/v8 v8.0.32` 依赖 | 插件 ABI 需要 |
+
+> 设备令牌刷新（`/api/v1/deviceToken/refresh`）不需要改上游核心：
+> 实现放在插件内部 `cmd/cpa-plugin/refresh.go`。
 
 **上游更新后的自检命令**（应全部有输出）：
 
 ```bash
 grep -n "PollLoginOnce\|BuildAccountFromToken" account/oauth.go
+grep -n "pending = map\[string\]\*pendingOAuth" account/oauth.go
 grep -n "InferenceBase" account/region.go
-grep -n "streamWithQueueRecovery\|func (b \*Bridge) Identity" internal/bridge/bridge.go
+grep -n "streamWithQueueRecovery\|func (b \*Bridge) Identity\|func (b \*Bridge) Email" internal/bridge/bridge.go
 grep -n "callGetCtx" internal/bridge/client.go
 ```
 
@@ -130,6 +134,8 @@ grep -n "callGetCtx" internal/bridge/client.go
 | `modelstate.go` | **模型开关**（`models.json` denylist） |
 | `executor.go` | `execute` / `execute_stream` + host 流桥；内嵌 `baseprompt.json` |
 | `checkin.go` | 签到核心 + 定时调度 |
+| `refresh.go` | 设备令牌刷新（`/api/v1/deviceToken/refresh`） |
+| `settings.go` | 面板配置持久化（`plugin_settings.json`） |
 | `management.go` | 管理路由 + host auth RPC |
 | `panel.go` / `panel.html` | 内嵌管理面板 |
 | `plugin_test.go` | 单测 |
@@ -231,6 +237,7 @@ oauth-model-alias:
 |---|---|
 | `~/.cli-proxy-api/qoder-*.json` | 账号凭证（CPA auth 文件，权威存储） |
 | `~/.qoder2api-cpa/models.json` | 模型开关 denylist（`{"disabled":[...]}`） |
+| `~/.qoder2api-cpa/plugin_settings.json` | 面板改过的配置（`checkin_auto`/`checkin_times`/...，覆盖 config.yaml） |
 | `~/.qoder2api-cpa/checkin_history.json` | 本地签到历史（streak 统计） |
 | `~/.qoder2api-cpa/logs/` | 插件日志 |
 | `${APP}/plugins/linux/amd64/qoder-v*.so` | 插件产物 |
@@ -251,17 +258,18 @@ oauth-model-alias:
 | 2 | `umid` 真实机器身份 | 仍是 `md5("machine:"+uid+salt)` 伪造 | 风控差异，非功能问题 | 高（需逆向 Rust/ELF） |
 | 3 | `Cosy-Organization-Id` / `AI-CLIENT-TIMESTAMP` 头 | 未发送 | 请求指纹与官方有差 | 低 |
 | 4 | 队列最大等待 | 默认 10min（官方 1h） | 长队可能提前超时 | 低（可配置化） |
-| 5 | `cmd/cpa-plugin/` 未纳入 git | 仍是 untracked | 误操作可能丢失 | 低 |
-| 6 | 无 CI / 自动构建 | 手动构建 | 依赖人工 | 低 |
-| 7 | 插件 logo | 指向 `webconsole/favicon.ico`，该文件不存在 → 404 | 面板图标缺失 | 低 |
-| 8 | 版本号无关联 | 插件 0.1.0 与上游/官方版本无关 | 追溯困难 | 低 |
+| 5 | 设备令牌刷新 | ✅ 已实现：每日自动调 `/api/v1/deviceToken/refresh` 并轮换 refresh_token | — | 已完成 |
+| 6 | 面板配置持久化 | ✅ 已实现：落盘 `plugin_settings.json`，重启后覆盖 config.yaml | — | 已完成 |
+| 7 | 并发 OAuth 登录 | ✅ 已实现：`pending` 改为按 loginID 的 map | — | 已完成 |
+| 8 | 插件 logo 404 | ✅ 已修：改为内嵌 SVG data URI | — | 已完成 |
+| 9 | 签到指纹 | 国际版需从官方客户端抓包提供 `checkin_fingerprint`；自造无效，故不自动生成 | `no_campaign` 时面板会给出提示 | 设计如此 |
+| 10 | CI | ✅ 已加 `.github/workflows/ci.yml`（build/vet/test/c-shared） | — | 已完成 |
 
 ### 建议优先级
 
-1. **#5 先做**：把插件提交到 git 分支，避免丢失（§6.1 的推荐布局）。
-2. **#3 / #4 / #7**：低风险，随手可补。
-3. **#1**：需要抓一次官方 CLI 的真实请求（`mitmproxy` 或分析 `ctx.py`），是唯一"需要专门投入"的项。
-4. **#2**：投入产出比最低，可长期搁置。
+1. **#1**：需要抓一次官方 CLI 的真实请求（`mitmproxy` 或分析 `ctx.py`），是唯一"需要专门投入"的项。
+2. **#3 / #4**：低风险，随手可补。
+3. **#2**：投入产出比最低，可长期搁置。
 
 ---
 
