@@ -57,6 +57,7 @@
     <div class="bar">
       <button class="primary" onclick="checkinAll()">全部签到</button>
       <button onclick="load(true)">刷新</button>
+      <button onclick="loadCredits()">刷新积分</button>
       <button onclick="toggleConfig()" id="cfgBtn">自动签到: 关</button>
       <button onclick="showModels()">模型管理</button>
       <button onclick="showImport()">添加账号</button>
@@ -102,7 +103,7 @@
     <div class="card">
       <table>
         <thead><tr>
-          <th>账号</th><th>区域</th><th>模式</th><th>套餐</th><th>连续/累计</th><th>状态</th><th style="text-align:right">操作</th>
+          <th>账号</th><th>区域</th><th>模式</th><th>套餐</th><th>积分</th><th>连续/累计</th><th>状态</th><th style="text-align:right">操作</th>
         </tr></thead>
         <tbody id="rows"></tbody>
       </table>
@@ -138,7 +139,7 @@ function readUrlKey(){const m=new URLSearchParams(window.location.search).get("k
 function getKey(){return sessionStorage.getItem(SS_KEY)||readPanelKey()||readUrlKey()}
 function loadFromParent(){const k=readPanelKey()||readUrlKey();if(k){sessionStorage.setItem(SS_KEY,k);enter()}else toast("未能从主面板读取密钥，请手动粘贴","err")}
 function saveKey(){const v=document.getElementById("keyInput").value.trim();if(!v)return;sessionStorage.setItem(SS_KEY,v);enter()}
-function enter(){document.getElementById("authBox").classList.add("hidden");document.getElementById("main").classList.remove("hidden");load(false);loadConfig()}
+function enter(){document.getElementById("authBox").classList.add("hidden");document.getElementById("main").classList.remove("hidden");load(false).then(()=>loadCredits());loadConfig()}
 
 function authHeaders(){const k=getKey();return k?{"Authorization":"Bearer "+k}:{}}
 async function api(path,opts={}){
@@ -174,10 +175,12 @@ function render(){
     const tr=document.createElement("tr");
     const status = a.disabled ? '<span class="tag err">已禁用</span>' : '<span class="tag ok">启用</span>';
     const streak = (a.streak_days||a.total_claim_days) ? ((a.streak_days||0)+" / "+(a.total_claim_days||0)) : '<span class="muted">-</span>';
+    const credKey = esc(a.auth_index||a.id||"");
     tr.innerHTML=`<td><div>${esc(a.name||a.id)}</div><div class="muted" style="font-size:11px">${esc(a.email||"")}</div></td>
       <td><span class="tag">${esc(a.region)}</span></td>
       <td>${esc(a.auth_mode||"")}</td>
       <td>${esc(a.plan||"-")}</td>
+      <td class="cred" data-auth="${credKey}"><span class="muted">-</span></td>
       <td>${streak}</td>
       <td>${status}</td>
       <td style="text-align:right;white-space:nowrap">
@@ -199,11 +202,33 @@ async function checkinOne(id){
     toast((res.status==="claimed"?"签到成功":(res.message||res.status)), res.status==="error"?"err":"ok", res.message||"");
     load(true)}catch(e){toast("签到失败","err",e.message)}
 }
+async function loadCredits(){
+  const cells=document.querySelectorAll("td.cred");
+  for(const c of cells)c.innerHTML='<span class="muted">…</span>';
+  try{
+    const r=await api("/accounts/quotas");
+    const map={};
+    for(const q of (r.quotas||[]))map[q.auth_index||q.id]=q;
+    for(const c of cells){
+      const q=map[c.getAttribute("data-auth")];
+      if(!q){c.innerHTML='<span class="muted">-</span>';continue}
+      if(q.error){c.innerHTML='<span class="tag err" title="'+esc(q.error)+'">失败</span>';continue}
+      const cls=q.available_credits>0?"ok":"warn";
+      c.innerHTML='<span class="tag '+cls+'" title="用户/加油包/组织">'+esc(q.available_credits)+'</span>';
+    }
+  }catch(e){toast("积分刷新失败","err",e.message)}
+}
+
 async function quota(id){
   try{const r=await api("/account/quota?account_id="+encodeURIComponent(id));
     if(r.error){toast("额度查询失败","err",r.error);return}
-    const q=r.quota||{};const u=q.user_quota||q.addon_quota||{};
-    toast("额度", "ok", `套餐: ${q.plan||"-"} · 剩余: ${u.remaining!=null?u.remaining:"?"}/${u.total!=null?u.total:"?"}`);
+    const q=r.quota||{};
+    const buckets=[];
+    if(q.user_quota)buckets.push(`套餐 ${q.user_quota.remaining}/${q.user_quota.total}`);
+    if(q.addon_quota)buckets.push(`加油包 ${q.addon_quota.remaining}/${q.addon_quota.total}`);
+    if(q.org_resource_package)buckets.push(`组织 ${q.org_resource_package.remaining}/${q.org_resource_package.total}`);
+    const avail=q.available_credits!=null?q.available_credits:0;
+    toast("额度", "ok", `套餐: ${q.plan||"-"} · 可用积分: ${avail}${buckets.length?" · "+buckets.join(" · "):""}`);
   }catch(e){toast("额度查询失败","err",e.message)}
 }
 async function del(id){
@@ -253,7 +278,7 @@ function renderModels(){
     const cb=document.createElement("input");cb.type="checkbox";cb.style.width="auto";cb.checked=modelState[m.id]!==false;
     cb.addEventListener("change",()=>{modelState[m.id]=cb.checked});
     const nm=document.createElement("span");nm.textContent=m.name||m.id;
-    const idt=document.createElement("span");idt.className="muted";idt.style.cssText="font-size:11px;margin-left:auto";idt.textContent=m.id;
+    const idt=document.createElement("span");idt.className="muted";idt.style.cssText="font-size:11px;margin-left:auto";idt.textContent=(m.price_factor!=null?m.price_factor+"x · ":"")+m.id;
     el.appendChild(cb);el.appendChild(nm);el.appendChild(idt);
     box.appendChild(el);
   }

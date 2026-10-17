@@ -321,7 +321,7 @@ func fetchUserInfo(token string, ep Endpoints) (map[string]interface{}, error) {
 func fetchPlan(token string, ep Endpoints) string {
 	req, _ := http.NewRequest("GET", ep.PlanEndpoint, nil)
 	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := quotaClient.Do(req)
 	if err != nil {
 		return ""
 	}
@@ -356,11 +356,15 @@ func strGet(m map[string]interface{}, key string) string {
 	return ""
 }
 
+// quotaClient bounds quota/plan HTTP calls so a hung upstream cannot stall the
+// management panel's batch credits refresh.
+var quotaClient = &http.Client{Timeout: 15 * time.Second}
+
 func FetchQuota(token string, region Region) (*QuotaInfo, error) {
 	ep := GetEndpoints(region)
 	req, _ := http.NewRequest("GET", ep.QuotaEndpoint, nil)
 	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := quotaClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -372,21 +376,48 @@ func FetchQuota(token string, region Region) (*QuotaInfo, error) {
 		return nil, err
 	}
 
+	return ParseQuotaPayload(result, fetchPlan(token, ep)), nil
+}
+
+// ParseQuotaPayload turns a /api/v2/quota/usage (or unwrapped
+// /sash/api/v2/me/usage) response into a QuotaInfo. It is exported so the
+// available-credits aggregation can be unit tested without network access.
+func ParseQuotaPayload(result map[string]interface{}, plan string) *QuotaInfo {
+	// /sash/api/v2/me/usage wraps the same quota payload under "qoderUsage".
+	// Unwrap it so both endpoints share one parser.
+	if inner, ok := result["qoderUsage"].(map[string]interface{}); ok {
+		result = inner
+	}
+
 	info := &QuotaInfo{
-		Plan:            fetchPlan(token, ep),
+		Plan:            plan,
 		IsQuotaExceeded: result["isQuotaExceeded"] == true,
 		ExpiresAt:       int64(toFloat(result, "expiresAt")),
 	}
 
-	if uq := extractBucket(result, "userQuota"); uq != nil {
-		info.UserQuota = uq
+	info.UserQuota = extractBucketAny(result, "userQuota", "user_quota")
+	info.AddonQuota = extractBucketAny(result, "addOnQuota", "add_on_quota", "addonQuota")
+	info.OrgResourcePackage = extractBucketAny(result, "orgResourcePackage", "org_resource_package", "sharedQuota", "shared_quota")
+
+	// Mirror the official CLI: available = sum of every bucket's remaining.
+	for _, b := range []*QuotaBucket{info.UserQuota, info.AddonQuota, info.OrgResourcePackage} {
+		if b != nil {
+			info.AvailableCredits += b.Remaining
+		}
 	}
 
-	if aq := extractBucket(result, "addOnQuota"); aq != nil {
-		info.AddonQuota = aq
-	}
+	return info
+}
 
-	return info, nil
+// extractBucketAny is extractBucket with multiple accepted key spellings
+// (the API mixes camelCase and snake_case across regions/endpoints).
+func extractBucketAny(data map[string]interface{}, keys ...string) *QuotaBucket {
+	for _, key := range keys {
+		if b := extractBucket(data, key); b != nil {
+			return b
+		}
+	}
+	return nil
 }
 
 func extractBucket(data map[string]interface{}, key string) *QuotaBucket {
@@ -406,7 +437,8 @@ func extractBucket(data map[string]interface{}, key string) *QuotaBucket {
 	} else if v, ok := obj["reset_time"].(string); ok {
 		resetTime = v
 	}
-	return &QuotaBucket{Used: used, Total: total, Remaining: remaining, ResetTime: resetTime}
+	unit, _ := obj["unit"].(string)
+	return &QuotaBucket{Used: used, Total: total, Remaining: remaining, ResetTime: resetTime, Unit: unit}
 }
 
 func toFloat(m map[string]interface{}, key string) float64 {

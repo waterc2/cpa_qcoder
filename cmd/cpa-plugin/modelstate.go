@@ -13,6 +13,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 
 	"qoder2api/account"
+	"qoder2api/internal/bridge"
 )
 
 // modelSelection persists the user's model-exposure choices. It is a denylist:
@@ -133,6 +134,14 @@ func refreshHostAuthFiles() {
 	}
 }
 
+// catalogModel is a UI-facing model entry: the host ModelInfo plus the upstream
+// credit multiplier and reasoning flag the panel wants to display.
+type catalogModel struct {
+	Info        pluginapi.ModelInfo
+	PriceFactor float64
+	Reasoning   bool
+}
+
 // modelConfigView is the payload for GET/POST /models/config: the full catalog
 // with an enabled flag per model, plus the raw disabled list.
 func modelConfigView() map[string]any {
@@ -141,11 +150,12 @@ func modelConfigView() map[string]any {
 	list := make([]map[string]any, 0, len(models))
 	for _, m := range models {
 		list = append(list, map[string]any{
-			"id":        m.ID,
-			"name":      firstNonEmpty(m.DisplayName, m.ID),
-			"context":   m.ContextLength,
-			"enabled":   !disabled[strings.ToLower(m.ID)],
-			"reasoning": m.Thinking != nil,
+			"id":           m.Info.ID,
+			"name":         firstNonEmpty(m.Info.DisplayName, m.Info.ID),
+			"context":      m.Info.ContextLength,
+			"enabled":      !disabled[strings.ToLower(m.Info.ID)],
+			"reasoning":    m.Reasoning,
+			"price_factor": m.PriceFactor,
 		})
 	}
 	dis := make([]string, 0, len(disabled))
@@ -182,21 +192,15 @@ func handleModelConfigUpdate(req pluginapi.ManagementRequest) map[string]any {
 	return modelConfigView()
 }
 
-// modelCatalogForUI merges the static catalog with every account's live upstream
-// list so the panel can offer the full set of selectable models.
-func modelCatalogForUI() []pluginapi.ModelInfo {
-	seen := map[string]bool{}
-	var out []pluginapi.ModelInfo
-	add := func(ms []pluginapi.ModelInfo) {
-		for _, m := range ms {
-			if m.ID == "" || seen[strings.ToLower(m.ID)] {
-				continue
-			}
-			seen[strings.ToLower(m.ID)] = true
-			out = append(out, m)
-		}
-	}
-	add(staticModelsRaw())
+// modelCatalogForUI merges every account's live upstream list with the static
+// fallback so the panel can offer the full set of selectable models.
+//
+// The live upstream list is collected FIRST so its real display names (e.g.
+// "Qwen3.8-Max") win over the fallback catalog; the fallback only fills in
+// models no account reported. This fixes the panel showing raw internal keys
+// such as "qmodel_38max" because the static list used to shadow the live one.
+func modelCatalogForUI() []catalogModel {
+	var live []bridge.QoderModel
 	if files, err := hostAuthList(); err == nil {
 		for _, f := range files {
 			sa, err := resolveAuth(f)
@@ -207,15 +211,43 @@ func modelCatalogForUI() []pluginapi.ModelInfo {
 			if err != nil {
 				continue
 			}
-			if list, err := b.ListAvailableModels(); err == nil && len(list) > 0 {
-				ms := make([]pluginapi.ModelInfo, 0, len(list))
-				for _, m := range list {
-					ms = append(ms, modelInfoFor(m))
-				}
-				add(ms)
+			if list, err := b.ListAvailableModels(); err == nil {
+				live = append(live, list...)
 			}
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return mergeCatalog(live, fallbackModels)
+}
+
+// mergeCatalog deduplicates models by id, giving the live upstream list
+// priority over the static fallback. Exported behavior is covered by
+// TestMergeCatalogPrefersLiveDisplayName.
+func mergeCatalog(live, fallback []bridge.QoderModel) []catalogModel {
+	byID := map[string]catalogModel{}
+	order := []string{}
+	add := func(m bridge.QoderModel) {
+		info := modelInfoFor(m)
+		if info.ID == "" {
+			return
+		}
+		key := strings.ToLower(info.ID)
+		if _, ok := byID[key]; ok {
+			return
+		}
+		byID[key] = catalogModel{Info: info, PriceFactor: m.PriceFactor, Reasoning: m.IsReasoning}
+		order = append(order, key)
+	}
+	for _, m := range live {
+		add(m)
+	}
+	for _, m := range fallback {
+		add(m)
+	}
+
+	out := make([]catalogModel, 0, len(order))
+	for _, k := range order {
+		out = append(out, byID[k])
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Info.ID < out[j].Info.ID })
 	return out
 }

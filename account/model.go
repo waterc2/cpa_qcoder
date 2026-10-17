@@ -63,11 +63,18 @@ type Settings struct {
 }
 
 type QuotaInfo struct {
-	Plan            string       `json:"plan"`
-	UserQuota       *QuotaBucket `json:"user_quota,omitempty"`
-	AddonQuota      *QuotaBucket `json:"addon_quota,omitempty"`
-	IsQuotaExceeded bool         `json:"is_quota_exceeded"`
-	ExpiresAt       int64        `json:"expires_at,omitempty"`
+	Plan               string       `json:"plan"`
+	UserQuota          *QuotaBucket `json:"user_quota,omitempty"`
+	AddonQuota         *QuotaBucket `json:"addon_quota,omitempty"`
+	OrgResourcePackage *QuotaBucket `json:"org_resource_package,omitempty"`
+	// AvailableCredits is the sum of remaining credits across every bucket
+	// (user + add-on + org). This is what the official CLI shows as
+	// "Available Credits" and is more meaningful than any single bucket:
+	// a Pro Trial account can have userQuota.remaining=0 while addOnQuota still
+	// holds 83 credits.
+	AvailableCredits float64 `json:"available_credits"`
+	IsQuotaExceeded  bool    `json:"is_quota_exceeded"`
+	ExpiresAt        int64   `json:"expires_at,omitempty"`
 }
 
 type QuotaBucket struct {
@@ -75,4 +82,5 @@ type QuotaBucket struct {
 	Total     float64 `json:"total"`
 	Remaining float64 `json:"remaining"`
 	ResetTime string  `json:"reset_time,omitempty"`
+	Unit      string  `json:"unit,omitempty"`
 }

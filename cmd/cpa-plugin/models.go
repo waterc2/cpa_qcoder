@@ -9,24 +9,39 @@ import (
 	"qoder2api/internal/bridge"
 )
 
-// fallbackModelKeys is the static model catalog used before an account has been
+// fallbackModels is the static model catalog used before an account has been
 // queried (and as a fallback when the upstream model list is unavailable).
-var fallbackModelKeys = []string{
-	"auto", "qmodel_38max", "qfmodel", "qmodel_latest", "qmodel",
-	"q37fmodel", "dmodel", "dfmodel", "gmodel", "gfmodel",
-	"gm51model", "kmodel_latest", "kmodel", "mmodel",
+// Display names mirror the upstream /algo/api/v2/model/list response so the
+// panel never shows raw internal keys such as "qmodel_38max".
+var fallbackModels = []bridge.QoderModel{
+	{Key: "auto", DisplayName: "Auto", PriceFactor: 0.5},
+	{Key: "ultimate", DisplayName: "Ultimate", PriceFactor: 0.4, IsReasoning: true},
+	{Key: "performance", DisplayName: "Performance", PriceFactor: 1.1, IsReasoning: true},
+	{Key: "efficient", DisplayName: "Efficient", PriceFactor: 0.3},
+	{Key: "qmodel_38max", DisplayName: "Qwen3.8-Max", PriceFactor: 0.2, IsReasoning: true},
+	{Key: "qfmodel", DisplayName: "Qwen3.8-Flash", PriceFactor: 0, IsReasoning: true},
+	{Key: "qmodel_latest", DisplayName: "Qwen3.7-Max", PriceFactor: 0.5, IsReasoning: true},
+	{Key: "qmodel", DisplayName: "Qwen3.7-Plus", PriceFactor: 0.1, IsReasoning: true},
+	{Key: "gmodel", DisplayName: "GLM-5.3", PriceFactor: 0.8},
+	{Key: "gfmodel", DisplayName: "GLM-5.3-Flash", PriceFactor: 0.1},
+	{Key: "kmodel_latest", DisplayName: "Kimi-K3", PriceFactor: 1.4, IsReasoning: true},
+	{Key: "kmodel", DisplayName: "Kimi-K2.8-Preview", PriceFactor: 0.8, IsReasoning: true},
+	{Key: "dmodel", DisplayName: "DeepSeek-V4-Pro", PriceFactor: 0.5, IsReasoning: true},
+	{Key: "dfmodel", DisplayName: "DeepSeek-Flash", PriceFactor: 0.1},
+	{Key: "mmodel", DisplayName: "MiniMax-M3", PriceFactor: 0.2, IsReasoning: true},
 }
 
 func staticModelsRaw() []pluginapi.ModelInfo {
-	out := make([]pluginapi.ModelInfo, 0, len(fallbackModelKeys))
-	for _, key := range fallbackModelKeys {
-		out = append(out, modelInfoFor(bridge.QoderModel{
-			Key:             key,
-			DisplayName:     key,
-			Enable:          true,
-			ContextWindow:   180000,
-			MaxOutputTokens: 16384,
-		}))
+	out := make([]pluginapi.ModelInfo, 0, len(fallbackModels))
+	for _, m := range fallbackModels {
+		if m.ContextWindow == 0 {
+			m.ContextWindow = 180000
+		}
+		if m.MaxOutputTokens == 0 {
+			m.MaxOutputTokens = 16384
+		}
+		m.Enable = true
+		out = append(out, modelInfoFor(m))
 	}
 	return out
 }

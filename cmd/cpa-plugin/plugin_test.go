@@ -3,12 +3,14 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 
 	"qoder2api/account"
+	"qoder2api/internal/bridge"
 )
 
 func TestParseStoredBarePAT(t *testing.T) {
@@ -166,6 +168,15 @@ func TestModelStatic(t *testing.T) {
 	if resp.Provider != providerName || len(resp.Models) == 0 {
 		t.Fatalf("unexpected model response: provider=%q models=%d", resp.Provider, len(resp.Models))
 	}
+	// The fallback catalog must expose human display names, not raw keys.
+	for _, m := range resp.Models {
+		if m.ID == "qmodel_38max" && m.DisplayName != "Qwen3.8-Max" {
+			t.Fatalf("fallback display name for qmodel_38max = %q, want Qwen3.8-Max", m.DisplayName)
+		}
+		if m.DisplayName == "" || m.DisplayName == m.ID && strings.HasPrefix(m.ID, "q") && strings.HasSuffix(m.ID, "model") {
+			t.Fatalf("raw-key display name leaked: id=%q name=%q", m.ID, m.DisplayName)
+		}
+	}
 }
 
 func TestClientNeedsSSEFrame(t *testing.T) {
@@ -280,6 +291,34 @@ func TestEnsureModelEnabled(t *testing.T) {
 	}
 	if err := ensureModelEnabled(&qoderRequest{model: "auto", clientModel: "qoder-auto"}); err != nil {
 		t.Fatalf("enabled model rejected: %v", err)
+	}
+}
+
+// TestMergeCatalogPrefersLiveDisplayName guards the model-name fix: the static
+// fallback used to be merged first, so the panel showed raw keys like
+// "qmodel_38max" instead of the live display name "Qwen3.8-Max".
+func TestMergeCatalogPrefersLiveDisplayName(t *testing.T) {
+	live := []bridge.QoderModel{{Key: "qmodel_38max", DisplayName: "Qwen3.8-Max", Enable: true, PriceFactor: 0.2}}
+	fallback := []bridge.QoderModel{
+		{Key: "qmodel_38max", DisplayName: "qmodel_38max", Enable: true},
+		{Key: "only-static", DisplayName: "Only Static", Enable: true},
+	}
+	out := mergeCatalog(live, fallback)
+	if len(out) != 2 {
+		t.Fatalf("len = %d, want 2", len(out))
+	}
+	byID := map[string]catalogModel{}
+	for _, m := range out {
+		byID[m.Info.ID] = m
+	}
+	if got := byID["qmodel_38max"].Info.DisplayName; got != "Qwen3.8-Max" {
+		t.Fatalf("display name = %q, want Qwen3.8-Max", got)
+	}
+	if got := byID["qmodel_38max"].PriceFactor; got != 0.2 {
+		t.Fatalf("price factor = %v, want 0.2", got)
+	}
+	if _, ok := byID["only-static"]; !ok {
+		t.Fatal("static-only model missing")
 	}
 }
 

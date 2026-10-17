@@ -64,6 +64,7 @@ func managementRegistration() managementRegistrationResponse {
 	return managementRegistrationResponse{
 		Routes: []managementRoute{
 			{Method: http.MethodGet, Path: base + "/accounts", Description: "List Qoder accounts (region, plan, quota, check-in streak)."},
+			{Method: http.MethodGet, Path: base + "/accounts/quotas", Description: "Fetch live credits for every account (parallel)."},
 			{Method: http.MethodPost, Path: base + "/checkin", Description: "Check in one account (account_id/auth_index) or all accounts."},
 			{Method: http.MethodGet, Path: base + "/account/quota", Description: "Fetch live quota for one account (account_id/auth_index)."},
 			{Method: http.MethodPost, Path: base + "/import", Description: "Import a Qoder PAT or OAuth credential into the host auth store."},
@@ -96,6 +97,8 @@ func handleManagement(raw []byte) ([]byte, error) {
 	switch {
 	case req.Method == http.MethodGet && path == base+"/accounts":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, map[string]any{"accounts": listAccounts()}))
+	case req.Method == http.MethodGet && path == base+"/accounts/quotas":
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleAllQuotas()))
 	case req.Method == http.MethodPost && path == base+"/checkin":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleCheckin(req)))
 	case req.Method == http.MethodGet && path == base+"/account/quota":
@@ -362,6 +365,73 @@ func handleQuota(req pluginapi.ManagementRequest) map[string]any {
 		return map[string]any{"error": err.Error()}
 	}
 	return map[string]any{"ok": true, "quota": quota}
+}
+
+// accountQuotaView is one row of the batch /accounts/quotas response.
+type accountQuotaView struct {
+	AuthIndex  string               `json:"auth_index"`
+	ID         string               `json:"id"`
+	Plan       string               `json:"plan,omitempty"`
+	Available  float64              `json:"available_credits"`
+	User       *account.QuotaBucket `json:"user_quota,omitempty"`
+	Addon      *account.QuotaBucket `json:"addon_quota,omitempty"`
+	Org        *account.QuotaBucket `json:"org_resource_package,omitempty"`
+	IsExceeded bool                 `json:"is_quota_exceeded"`
+	Error      string               `json:"error,omitempty"`
+}
+
+// handleAllQuotas fetches live credits for every account in parallel (bounded
+// concurrency) so the panel can show an "Available Credits" column like the
+// official CLI overview. Per-account failures are reported in the row's error
+// field instead of failing the whole batch.
+func handleAllQuotas() map[string]any {
+	files, err := hostAuthList()
+	if err != nil {
+		return map[string]any{"error": err.Error()}
+	}
+	out := make([]accountQuotaView, len(files))
+	sem := make(chan struct{}, 4)
+	var wg sync.WaitGroup
+	for i, f := range files {
+		wg.Add(1)
+		go func(i int, f pluginapi.HostAuthFileEntry) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			view := accountQuotaView{AuthIndex: f.AuthIndex, ID: f.ID}
+			sa, err := resolveAuth(f)
+			if err != nil {
+				view.Error = err.Error()
+				out[i] = view
+				return
+			}
+			if view.ID == "" {
+				view.ID = authIDFor(sa)
+			}
+			deviceToken := extractDeviceToken(sa.Secret)
+			if deviceToken == "" {
+				view.Error = "无 device token"
+				out[i] = view
+				return
+			}
+			q, err := account.FetchQuota(deviceToken, sa.region())
+			if err != nil {
+				view.Error = err.Error()
+				out[i] = view
+				return
+			}
+			view.Plan = q.Plan
+			view.Available = q.AvailableCredits
+			view.User = q.UserQuota
+			view.Addon = q.AddonQuota
+			view.Org = q.OrgResourcePackage
+			view.IsExceeded = q.IsQuotaExceeded
+			out[i] = view
+		}(i, f)
+	}
+	wg.Wait()
+	return map[string]any{"ok": true, "quotas": out}
 }
 
 func handleImport(req pluginapi.ManagementRequest) map[string]any {
