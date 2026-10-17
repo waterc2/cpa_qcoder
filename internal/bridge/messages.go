@@ -219,16 +219,24 @@ func HasBlockType(blocks []interface{}, blockType string) bool {
 	return false
 }
 
-// normalizeRole maps OpenAI-compatible roles onto the set the Qoder upstream
-// accepts: system, assistant, user, tool, function. The newer "developer" role
-// (OpenAI o1/o3 and several agent clients) is an alias for "system"; sending it
-// through verbatim makes upstream reject the request with
+// normalizeRole maps OpenAI-compatible roles onto the strict set the Qoder
+// upstream accepts: system, assistant, user, tool, function.
+//
+// The newer "developer" role (OpenAI o1/o3 and several agent clients) is an
+// alias for "system"; sending it through verbatim makes upstream reject the
+// whole request with
 // "developer is not one of ['system','assistant','user','tool','function']".
+// Any other unknown role is coerced to "user" so the content is preserved
+// instead of failing the request.
 func normalizeRole(role string) string {
-	if role == "developer" {
+	switch role {
+	case "developer":
 		return "system"
+	case "system", "assistant", "user", "tool", "function":
+		return role
+	default:
+		return "user"
 	}
-	return role
 }
 
 // messageRole 读取并归一化消息角色。

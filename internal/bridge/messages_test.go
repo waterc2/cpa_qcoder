@@ -11,6 +11,12 @@ func TestNormalizeRoleDeveloper(t *testing.T) {
 			t.Fatalf("normalizeRole(%q) = %q, want unchanged", role, got)
 		}
 	}
+	// Unknown roles must never reach upstream verbatim.
+	for _, role := range []string{"model", "", "weird"} {
+		if got := normalizeRole(role); got != "user" {
+			t.Fatalf("normalizeRole(%q) = %q, want user", role, got)
+		}
+	}
 }
 
 func TestBuildQoderMessagesMapsDeveloperToSystem(t *testing.T) {
