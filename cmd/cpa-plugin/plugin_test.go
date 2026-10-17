@@ -229,3 +229,55 @@ func TestModelConfigUpdate(t *testing.T) {
 		t.Fatalf("disabled = %v (want 2 entries)", dis)
 	}
 }
+
+// TestBuildQoderRequestModelOverride guards the P0 fix: CPA resolves
+// oauth-model-alias entries before calling the executor and passes the real
+// upstream key in ExecutorRequest.Model, while the payload keeps the client
+// alias. The plugin must use the override for the upstream call.
+func TestBuildQoderRequestModelOverride(t *testing.T) {
+	body := []byte(`{"model":"qoder-auto","messages":[{"role":"user","content":"hi"}]}`)
+	qr, err := buildQoderRequest(body, "auto", false)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if qr.model != "auto" {
+		t.Fatalf("upstream model = %q, want auto", qr.model)
+	}
+	if qr.clientModel != "qoder-auto" {
+		t.Fatalf("client model = %q, want qoder-auto", qr.clientModel)
+	}
+
+	// Empty override must fall back to the payload model.
+	qr2, err := buildQoderRequest(body, "", false)
+	if err != nil {
+		t.Fatalf("build fallback: %v", err)
+	}
+	if qr2.model != "qoder-auto" {
+		t.Fatalf("fallback model = %q, want qoder-auto", qr2.model)
+	}
+}
+
+// TestEnsureModelEnabled guards the P1 fix: the host keeps its old model
+// registry after a selection change, so the executor must reject disabled
+// models itself.
+func TestEnsureModelEnabled(t *testing.T) {
+	account.SetDataRoot(t.TempDir())
+	modelSelMu.Lock()
+	modelSelData = nil
+	modelSelMu.Unlock()
+	defer func() {
+		modelSelMu.Lock()
+		modelSelData = nil
+		modelSelMu.Unlock()
+	}()
+
+	if err := saveModelSelection(&modelSelection{Disabled: []string{"efficient"}}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if err := ensureModelEnabled(&qoderRequest{model: "efficient", clientModel: "qoder-efficient"}); err == nil {
+		t.Fatal("disabled model was allowed")
+	}
+	if err := ensureModelEnabled(&qoderRequest{model: "auto", clientModel: "qoder-auto"}); err != nil {
+		t.Fatalf("enabled model rejected: %v", err)
+	}
+}

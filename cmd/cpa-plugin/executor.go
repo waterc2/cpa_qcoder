@@ -86,7 +86,8 @@ func bridgeForAuth(sa *storedAuth) (*bridge.Bridge, error) {
 
 type qoderRequest struct {
 	body        map[string]interface{}
-	model       string
+	model       string // upstream model key passed to Qoder
+	clientModel string // client-requested name, echoed back in responses
 	agent       string
 	messages    []interface{}
 	tools       interface{}
@@ -95,13 +96,19 @@ type qoderRequest struct {
 	stream      bool
 }
 
-func buildQoderRequest(raw []byte, wantStream bool) (*qoderRequest, error) {
+// buildQoderRequest decodes the translated client payload. modelOverride is the
+// host-resolved upstream model (pluginapi.ExecutorRequest.Model): CPA resolves
+// oauth-model-alias entries before calling the executor, so req.Model is the
+// real Qoder key (e.g. "auto") while the payload still carries the client name
+// (e.g. "qoder-auto"). Prefer the override so aliases do not leak upstream.
+func buildQoderRequest(raw []byte, modelOverride string, wantStream bool) (*qoderRequest, error) {
 	body := raw
 	var oreq map[string]interface{}
 	if err := json.Unmarshal(body, &oreq); err != nil {
 		return nil, fmt.Errorf("decode request: %w", err)
 	}
-	model := bridge.StrValDefault(oreq, "model", "auto")
+	clientModel := bridge.StrValDefault(oreq, "model", "auto")
+	model := firstNonEmpty(strings.TrimSpace(modelOverride), clientModel)
 	incoming, _ := oreq["messages"].([]interface{})
 	tools := oreq["tools"]
 	toolsOn := tools != nil
@@ -120,14 +127,15 @@ func buildQoderRequest(raw []byte, wantStream bool) (*qoderRequest, error) {
 	messages := bridge.BuildQoderMessages(templateMessages(), incoming, prompt, toolsOn)
 
 	return &qoderRequest{
-		body:     oreq,
-		model:    model,
-		agent:    bridge.InferAgent(model),
-		messages: messages,
-		tools:    tools,
-		toolsOn:  toolsOn,
-		opts:     opts,
-		stream:   wantStream,
+		body:        oreq,
+		model:       model,
+		clientModel: clientModel,
+		agent:       bridge.InferAgent(clientModel),
+		messages:    messages,
+		tools:       tools,
+		toolsOn:     toolsOn,
+		opts:        opts,
+		stream:      wantStream,
 	}, nil
 }
 
@@ -150,9 +158,12 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 	if len(body) == 0 {
 		body = req.OriginalRequest
 	}
-	qr, err := buildQoderRequest(body, false)
+	qr, err := buildQoderRequest(body, req.Model, false)
 	if err != nil {
 		return nil, err
+	}
+	if err := ensureModelEnabled(qr); err != nil {
+		return errorEnvelopeStatus("model_not_found", err.Error(), 404), nil
 	}
 
 	var full strings.Builder
@@ -194,7 +205,7 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 	}
 	resp := map[string]interface{}{
 		"id": reqID, "object": "chat.completion",
-		"created": created, "model": qr.model,
+		"created": created, "model": qr.clientModel,
 		"choices": []interface{}{
 			map[string]interface{}{"index": 0, "message": message, "finish_reason": finish},
 		},
@@ -231,9 +242,12 @@ func handleExecStream(raw []byte) ([]byte, error) {
 	if len(body) == 0 {
 		body = req.OriginalRequest
 	}
-	qr, err := buildQoderRequest(body, true)
+	qr, err := buildQoderRequest(body, req.Model, true)
 	if err != nil {
 		return nil, err
+	}
+	if err := ensureModelEnabled(qr); err != nil {
+		return errorEnvelopeStatus("model_not_found", err.Error(), 404), nil
 	}
 	frame := clientNeedsSSEFrame(req.Metadata)
 	headers := streamHeaders()
@@ -272,7 +286,7 @@ func collectStream(ctx context.Context, b *bridge.Bridge, qr *qoderRequest, fram
 		if d.InputTokens > 0 || d.OutputTokens > 0 {
 			inTok, outTok = d.InputTokens, d.OutputTokens
 		}
-		chunk := bridge.MakeChatChunk(reqID, created, qr.model)
+		chunk := bridge.MakeChatChunk(reqID, created, qr.clientModel)
 		choices := chunk["choices"].([]interface{})
 		delta := choices[0].(map[string]interface{})["delta"].(map[string]interface{})
 		if d.Content != "" {
@@ -295,7 +309,7 @@ func collectStream(ctx context.Context, b *bridge.Bridge, qr *qoderRequest, fram
 	if len(toolCallBuf) > 0 {
 		finish = "tool_calls"
 	}
-	done := bridge.MakeChatChunk(reqID, created, qr.model)
+	done := bridge.MakeChatChunk(reqID, created, qr.clientModel)
 	ch := done["choices"].([]interface{})[0].(map[string]interface{})
 	ch["finish_reason"] = finish
 	ch["delta"] = map[string]interface{}{}
@@ -328,7 +342,7 @@ func pumpStream(ctx context.Context, cancel context.CancelFunc, streamID string,
 		if d.InputTokens > 0 || d.OutputTokens > 0 {
 			inTok, outTok = d.InputTokens, d.OutputTokens
 		}
-		chunk := bridge.MakeChatChunk(reqID, created, qr.model)
+		chunk := bridge.MakeChatChunk(reqID, created, qr.clientModel)
 		choices := chunk["choices"].([]interface{})
 		delta := choices[0].(map[string]interface{})["delta"].(map[string]interface{})
 		if d.Content != "" {
@@ -363,7 +377,7 @@ func pumpStream(ctx context.Context, cancel context.CancelFunc, streamID string,
 	if len(toolCallBuf) > 0 {
 		finish = "tool_calls"
 	}
-	done := bridge.MakeChatChunk(reqID, created, qr.model)
+	done := bridge.MakeChatChunk(reqID, created, qr.clientModel)
 	ch := done["choices"].([]interface{})[0].(map[string]interface{})
 	ch["finish_reason"] = finish
 	ch["delta"] = map[string]interface{}{}

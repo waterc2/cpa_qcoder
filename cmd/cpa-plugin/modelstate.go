@@ -2,11 +2,13 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 
@@ -79,6 +81,58 @@ func applyModelSelection(models []pluginapi.ModelInfo) []pluginapi.ModelInfo {
 	return out
 }
 
+// modelIsDisabled reports whether a model id is hidden by the user's denylist.
+func modelIsDisabled(id string) bool {
+	id = strings.ToLower(strings.TrimSpace(id))
+	if id == "" {
+		return false
+	}
+	return modelDisabledSet()[id]
+}
+
+// ensureModelEnabled rejects requests for models the user unchecked. CPA keeps
+// serving its previously registered model registry after a selection change, so
+// this is the enforcement point that makes the denylist effective immediately
+// (and it also covers host-registered aliases such as qoder-auto).
+func ensureModelEnabled(qr *qoderRequest) error {
+	if qr == nil {
+		return nil
+	}
+	if modelIsDisabled(qr.model) || modelIsDisabled(qr.clientModel) {
+		return fmt.Errorf("model %s is disabled by the Qoder model selection", firstNonEmpty(qr.clientModel, qr.model))
+	}
+	return nil
+}
+
+// refreshHostAuthFiles re-saves every Qoder auth file with a bumped revision so
+// the host file watcher re-parses it and re-registers its models. The host has
+// no explicit "re-register models" RPC, so this is how a model selection change
+// propagates to /v1/models without restarting CPA. Best effort: failures are
+// ignored because the executor still enforces the denylist.
+func refreshHostAuthFiles() {
+	files, err := hostAuthList()
+	if err != nil {
+		return
+	}
+	rev := time.Now().UnixNano()
+	for _, f := range files {
+		raw, err := hostAuthGet(f.AuthIndex)
+		if err != nil {
+			continue
+		}
+		var doc map[string]any
+		if json.Unmarshal(raw, &doc) != nil {
+			continue
+		}
+		doc["model_revision"] = rev
+		out, err := json.Marshal(doc)
+		if err != nil {
+			continue
+		}
+		_ = hostAuthSave(f.Name, out)
+	}
+}
+
 // modelConfigView is the payload for GET/POST /models/config: the full catalog
 // with an enabled flag per model, plus the raw disabled list.
 func modelConfigView() map[string]any {
@@ -122,6 +176,9 @@ func handleModelConfigUpdate(req pluginapi.ManagementRequest) map[string]any {
 	if err := saveModelSelection(&modelSelection{Disabled: out}); err != nil {
 		return map[string]any{"error": err.Error()}
 	}
+	// Ask the host to re-register models so the change is reflected in
+	// /v1/models without a CPA restart (best effort; executor enforces anyway).
+	refreshHostAuthFiles()
 	return modelConfigView()
 }
 
