@@ -10,7 +10,7 @@ func BuildQoderMessages(templateMsgs []interface{}, incoming []interface{}, prom
 
 	hasIncomingSystem := false
 	for _, m := range incoming {
-		if mm, ok := m.(map[string]interface{}); ok && mm["role"] == "system" {
+		if mm, ok := m.(map[string]interface{}); ok && messageRole(mm) == "system" {
 			hasIncomingSystem = true
 			break
 		}
@@ -74,7 +74,7 @@ func BuildQoderMessages(templateMsgs []interface{}, incoming []interface{}, prom
 }
 
 func ConvertIncomingMessage(msg map[string]interface{}, toolsEnabled bool) map[string]interface{} {
-	role, _ := msg["role"].(string)
+	role := messageRole(msg)
 	content := msg["content"]
 
 	// Handle Claude Messages API content blocks (array of typed blocks)
@@ -217,6 +217,24 @@ func HasBlockType(blocks []interface{}, blockType string) bool {
 		}
 	}
 	return false
+}
+
+// normalizeRole maps OpenAI-compatible roles onto the set the Qoder upstream
+// accepts: system, assistant, user, tool, function. The newer "developer" role
+// (OpenAI o1/o3 and several agent clients) is an alias for "system"; sending it
+// through verbatim makes upstream reject the request with
+// "developer is not one of ['system','assistant','user','tool','function']".
+func normalizeRole(role string) string {
+	if role == "developer" {
+		return "system"
+	}
+	return role
+}
+
+// messageRole 读取并归一化消息角色。
+func messageRole(msg map[string]interface{}) string {
+	role, _ := msg["role"].(string)
+	return normalizeRole(role)
 }
 
 // BuildUserMessage 构造纯文本 user 消息（保留原有签名，内部转发到多模态版本）。
