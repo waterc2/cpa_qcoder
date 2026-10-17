@@ -1,0 +1,51 @@
+package bridge
+
+import (
+	"encoding/json"
+	"testing"
+)
+
+func TestParseQueueErrorNested(t *testing.T) {
+	// Real upstream 403 shape: the queue signal is JSON encoded inside a
+	// message string inside another message string.
+	inner := map[string]interface{}{
+		"isQueued": true, "modelKey": "performance", "queueCount": 0,
+		"queueType": "p3", "retryAfterSeconds": 30, "serviceAvailable": false,
+		"subCode": "RESOURCE_LIMIT", "waitTime": 30,
+	}
+	innerJSON, _ := json.Marshal(inner)
+	mid := map[string]interface{}{"code": "10605", "message": string(innerJSON), "subCode": "RESOURCE_LIMIT"}
+	midJSON, _ := json.Marshal(mid)
+	outer := map[string]interface{}{"code": "403", "message": string(midJSON)}
+	outerJSON, _ := json.Marshal(outer)
+
+	ue := NewUpstreamError(403, string(outerJSON))
+	qe := parseQueueError(ue)
+	if qe == nil {
+		t.Fatalf("expected queue error, got nil (detail=%s)", ue.Detail)
+	}
+	if !qe.IsQueued || qe.ModelKey != "performance" || qe.QueueType != "p3" ||
+		qe.RetryAfterSeconds != 30 || qe.ServiceAvailable {
+		t.Fatalf("unexpected queue error: %+v", qe)
+	}
+}
+
+func TestParseQueueErrorNegative(t *testing.T) {
+	if qe := parseQueueError(NewUpstreamError(500, `{"error":"boom"}`)); qe != nil {
+		t.Fatalf("non-queue error parsed as queue: %+v", qe)
+	}
+	if qe := parseQueueError(ErrEmptyStream); qe != nil {
+		t.Fatalf("plain error parsed as queue: %+v", qe)
+	}
+}
+
+func TestParseQueueErrorAvailable(t *testing.T) {
+	detail := `{"isQueued":false,"modelKey":"auto","queueCount":0,"queueType":"p3","retryAfterSeconds":2,"serviceAvailable":true,"waitTime":0}`
+	qe := parseQueueError(NewUpstreamError(403, detail))
+	if qe == nil {
+		t.Fatal("expected queue signal")
+	}
+	if qe.IsQueued || !qe.ServiceAvailable || qe.RetryAfterSeconds != 2 {
+		t.Fatalf("unexpected: %+v", qe)
+	}
+}

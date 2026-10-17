@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Qoder</title>
+<style>
+  :root{--bg:#0f1115;--card:#181b22;--fg:#e6e8ee;--muted:#8b93a7;--accent:#4f8cff;--ok:#39d98a;--warn:#ffb020;--err:#ff5c5c;--line:#272b36}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue","PingFang SC","Microsoft YaHei",sans-serif}
+  .wrap{max-width:1080px;margin:0 auto;padding:20px}
+  h1{font-size:20px;margin:0 0 4px}
+  .sub{color:var(--muted);font-size:12px;margin-bottom:16px}
+  .bar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
+  button{background:var(--card);color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:8px 14px;cursor:pointer;font-size:13px}
+  button:hover{border-color:var(--accent)}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  button.danger{color:var(--err)}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:14px}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{text-align:left;padding:9px 8px;border-bottom:1px solid var(--line);vertical-align:middle}
+  th{color:var(--muted);font-weight:500;font-size:12px}
+  tr:last-child td{border-bottom:none}
+  .tag{display:inline-block;padding:1px 7px;border-radius:999px;font-size:11px;border:1px solid var(--line);color:var(--muted)}
+  .tag.ok{color:var(--ok);border-color:rgba(57,217,138,.4)}
+  .tag.err{color:var(--err);border-color:rgba(255,92,92,.4)}
+  .tag.warn{color:var(--warn);border-color:rgba(255,176,32,.4)}
+  input,select{background:#0c0e13;color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:13px;width:100%}
+  label{display:block;color:var(--muted);font-size:12px;margin:8px 0 4px}
+  .row{display:flex;gap:10px;flex-wrap:wrap}
+  .row>div{flex:1;min-width:180px}
+  #toasts{position:fixed;right:16px;bottom:16px;display:flex;flex-direction:column;gap:8px;z-index:9}
+  .toast{background:var(--card);border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:8px;padding:10px 14px;max-width:360px;font-size:13px;box-shadow:0 8px 24px rgba(0,0,0,.4)}
+  .toast.err{border-left-color:var(--err)}
+  .toast.ok{border-left-color:var(--ok)}
+  .muted{color:var(--muted)}
+  .hidden{display:none}
+  #authBox{max-width:380px;margin:60px auto}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Qoder 账号管理</h1>
+  <div class="sub">Qoder → CLIProxyAPI · 登录 / 账号 / 签到</div>
+
+  <div id="authBox" class="card hidden">
+    <label>管理密钥 (Management Key)</label>
+    <input id="keyInput" type="password" placeholder="粘贴 CPA 管理密钥">
+    <div style="margin-top:12px;display:flex;gap:8px">
+      <button class="primary" onclick="saveKey()">进入</button>
+      <button onclick="loadFromParent()">从主面板读取</button>
+    </div>
+  </div>
+
+  <div id="main" class="hidden">
+    <div class="bar">
+      <button class="primary" onclick="checkinAll()">全部签到</button>
+      <button onclick="load(true)">刷新</button>
+      <button onclick="toggleConfig()" id="cfgBtn">自动签到: 关</button>
+      <button onclick="showModels()">模型管理</button>
+      <button onclick="showImport()">添加账号</button>
+    </div>
+
+    <div id="modelCard" class="card hidden">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap">
+        <div><b>模型管理</b> <span class="muted" style="font-size:12px">勾选要开放给 CPA 的模型</span></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button onclick="modelSelectAll(true)">全选</button>
+          <button onclick="modelSelectAll(false)">全不选</button>
+          <button class="primary" onclick="saveModels()">保存</button>
+          <button onclick="hideModels()">关闭</button>
+        </div>
+      </div>
+      <input id="modelFilter" placeholder="搜索模型…" oninput="renderModels()" style="margin-bottom:10px">
+      <div id="modelList" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:6px;max-height:440px;overflow:auto"></div>
+      <div class="muted" style="font-size:12px;margin-top:8px">未勾选的模型不会出现在 /v1/models，也不会被路由。</div>
+    </div>
+
+    <div id="importCard" class="card hidden">
+      <div class="row">
+        <div>
+          <label>凭证 (PAT 或 OAuth secret JSON)</label>
+          <input id="impSecret" type="password" placeholder="pt-... 或 {"device_token":"dt-...","refresh_token":"..."}">
+        </div>
+        <div style="max-width:180px">
+          <label>区域</label>
+          <select id="impRegion"><option value="global">global</option><option value="cn">cn</option></select>
+        </div>
+        <div style="max-width:180px">
+          <label>名称（可选）</label>
+          <input id="impName" placeholder="备注">
+        </div>
+      </div>
+      <div style="margin-top:12px;display:flex;gap:8px">
+        <button class="primary" onclick="doImport()">导入</button>
+        <button onclick="hideImport()">取消</button>
+      </div>
+      <div class="muted" style="margin-top:8px;font-size:12px">OAuth 登录请在 CPA 主面板「添加认证」中选择 Qoder。</div>
+    </div>
+
+    <div class="card">
+      <table>
+        <thead><tr>
+          <th>账号</th><th>区域</th><th>模式</th><th>套餐</th><th>连续/累计</th><th>状态</th><th style="text-align:right">操作</th>
+        </tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+      <div id="empty" class="muted hidden" style="padding:16px 0">暂无账号。点击「添加账号」导入 PAT，或在 CPA 主面板用 OAuth 登录。</div>
+    </div>
+  </div>
+</div>
+<div id="toasts"></div>
+
+<script>
+const API = "/v0/management/plugins/qoder";
+const ENC_PREFIX = "enc::v1::";
+const SECRET_SALT = "cli-proxy-api-webui::secure-storage";
+const PANEL_STORE = "cli-proxy-auth";
+const SS_KEY = "qoder-mgmt-key";
+let accounts = [];
+
+function _enc(t){return new TextEncoder().encode(t)}
+function _dec(b){return new TextDecoder().decode(b)}
+function _keyBytes(){try{return _enc(SECRET_SALT+"|"+window.location.host+"|"+navigator.userAgent)}catch(e){return _enc(SECRET_SALT)}}
+function _xor(d,k){const r=new Uint8Array(d.length);for(let i=0;i<d.length;i++)r[i]=d[i]^k[i%k.length];return r}
+function _b64e(b){let s="";for(let i=0;i<b.length;i++)s+=String.fromCharCode(b[i]);return btoa(s)}
+function _b64d(s){const bin=atob(s);const b=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)b[i]=bin.charCodeAt(i);return b}
+function deobfuscate(p){if(!p||!p.startsWith(ENC_PREFIX))return p;try{return _dec(_xor(_b64d(p.slice(ENC_PREFIX.length)),_keyBytes()))}catch(e){return p}}
+function isEmbedded(){try{return window.self!==window.top}catch(e){return false}}
+function readPanelKey(){
+  if(!isEmbedded())return null;
+  let raw;try{raw=localStorage.getItem(PANEL_STORE)}catch(e){return null}
+  if(!raw)return null;
+  try{const parsed=JSON.parse(deobfuscate(raw));const st=(parsed&&parsed.state)||parsed||{};return typeof st.managementKey==="string"&&st.managementKey?st.managementKey:null}catch(e){return null}
+}
+function readUrlKey(){const m=new URLSearchParams(window.location.search).get("key");if(m){history.replaceState(null,"",window.location.pathname)}return m}
+function getKey(){return sessionStorage.getItem(SS_KEY)||readPanelKey()||readUrlKey()}
+function loadFromParent(){const k=readPanelKey()||readUrlKey();if(k){sessionStorage.setItem(SS_KEY,k);enter()}else toast("未能从主面板读取密钥，请手动粘贴","err")}
+function saveKey(){const v=document.getElementById("keyInput").value.trim();if(!v)return;sessionStorage.setItem(SS_KEY,v);enter()}
+function enter(){document.getElementById("authBox").classList.add("hidden");document.getElementById("main").classList.remove("hidden");load(false);loadConfig()}
+
+function authHeaders(){const k=getKey();return k?{"Authorization":"Bearer "+k}:{}}
+async function api(path,opts={}){
+  const r=await fetch(API+path,{...opts,headers:{"Content-Type":"application/json",...authHeaders(),...(opts.headers||{})}});
+  if(r.status===401||r.status===403){showAuth();throw new Error("未授权，请填写管理密钥")}
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok)throw new Error((data&&data.error)||("HTTP "+r.status));
+  return data;
+}
+function showAuth(){document.getElementById("main").classList.add("hidden");document.getElementById("authBox").classList.remove("hidden")}
+
+function toast(title,kind="ok",detail=""){
+  const box=document.getElementById("toasts");
+  const el=document.createElement("div");el.className="toast "+kind;
+  el.innerHTML='<div class="t"></div>'+(detail?'<div class="d muted"></div>':'');
+  el.querySelector(".t").textContent=title;
+  if(detail)el.querySelector(".d").textContent=detail;
+  box.appendChild(el);setTimeout(()=>el.remove(),5000);
+}
+function esc(s){return String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]))}
+
+async function load(force){
+  try{
+    const data=await api("/accounts");
+    accounts=data.accounts||[];
+    render();
+  }catch(e){toast("加载账号失败", "err", e.message)}
+}
+function render(){
+  const tb=document.getElementById("rows");tb.innerHTML="";
+  document.getElementById("empty").classList.toggle("hidden", accounts.length>0);
+  for(const a of accounts){
+    const tr=document.createElement("tr");
+    const status = a.disabled ? '<span class="tag err">已禁用</span>' : '<span class="tag ok">启用</span>';
+    const streak = (a.streak_days||a.total_claim_days) ? ((a.streak_days||0)+" / "+(a.total_claim_days||0)) : '<span class="muted">-</span>';
+    tr.innerHTML=`<td><div>${esc(a.name||a.id)}</div><div class="muted" style="font-size:11px">${esc(a.email||"")}</div></td>
+      <td><span class="tag">${esc(a.region)}</span></td>
+      <td>${esc(a.auth_mode||"")}</td>
+      <td>${esc(a.plan||"-")}</td>
+      <td>${streak}</td>
+      <td>${status}</td>
+      <td style="text-align:right;white-space:nowrap">
+        <button onclick="checkinOne('${esc(a.id||a.auth_index)}')">签到</button>
+        <button onclick="quota('${esc(a.id||a.auth_index)}')">额度</button>
+        <button class="danger" onclick="del('${esc(a.id||a.auth_index)}')">删除</button>
+      </td>`;
+    tb.appendChild(tr);
+  }
+}
+async function checkinAll(){
+  toast("正在签到全部账号…");
+  try{const r=await api("/checkin",{method:"POST",body:"{}"});toast("签到完成", (r.summary&&(r.summary.error||r.summary.no_campaign))?"err":"ok", JSON.stringify(r.summary||{}));load(true)}
+  catch(e){toast("签到失败","err",e.message)}
+}
+async function checkinOne(id){
+  try{const r=await api("/checkin",{method:"POST",body:JSON.stringify({account_id:id})});
+    const res=(r.results||[])[0]||{};
+    toast((res.status==="claimed"?"签到成功":(res.message||res.status)), res.status==="error"?"err":"ok", res.message||"");
+    load(true)}catch(e){toast("签到失败","err",e.message)}
+}
+async function quota(id){
+  try{const r=await api("/account/quota?account_id="+encodeURIComponent(id));
+    if(r.error){toast("额度查询失败","err",r.error);return}
+    const q=r.quota||{};const u=q.user_quota||q.addon_quota||{};
+    toast("额度", "ok", `套餐: ${q.plan||"-"} · 剩余: ${u.remaining!=null?u.remaining:"?"}/${u.total!=null?u.total:"?"}`);
+  }catch(e){toast("额度查询失败","err",e.message)}
+}
+async function del(id){
+  if(!confirm("确认删除该账号？"))return;
+  try{await api("/accounts/delete",{method:"POST",body:JSON.stringify({account_id:id})});toast("已删除");load(true)}
+  catch(e){toast("删除失败","err",e.message)}
+}
+function showImport(){document.getElementById("importCard").classList.remove("hidden")}
+function hideImport(){document.getElementById("importCard").classList.add("hidden")}
+async function doImport(){
+  const secret=document.getElementById("impSecret").value.trim();
+  const region=document.getElementById("impRegion").value;
+  const name=document.getElementById("impName").value.trim();
+  if(!secret){toast("请填写凭证","err");return}
+  try{const r=await api("/import",{method:"POST",body:JSON.stringify({secret,region,name})});
+    if(r.error){toast("导入失败","err",r.error);return}
+    toast("导入成功", "ok", r.name||r.email||"");hideImport();document.getElementById("impSecret").value="";load(true);
+  }catch(e){toast("导入失败","err",e.message)}
+}
+let cfg={};
+async function loadConfig(){try{cfg=await api("/checkin/config");document.getElementById("cfgBtn").textContent="自动签到: "+(cfg.checkin_auto?"开":"关")}catch(e){}}
+async function toggleConfig(){
+  try{const next=!cfg.checkin_auto;cfg=await api("/checkin/config",{method:"POST",body:JSON.stringify({checkin_auto:next})});
+    document.getElementById("cfgBtn").textContent="自动签到: "+(cfg.checkin_auto?"开":"关");toast("已更新")
+  }catch(e){toast("更新失败","err",e.message)}
+}
+
+// ---- model manager ----
+let modelCatalog=[], modelState={};
+function showModels(){document.getElementById("modelCard").classList.remove("hidden");loadModels()}
+function hideModels(){document.getElementById("modelCard").classList.add("hidden")}
+async function loadModels(){
+  try{const r=await api("/models/config");modelCatalog=r.models||[];modelState={};
+    for(const m of modelCatalog){modelState[m.id]=m.enabled!==false}
+    renderModels();
+  }catch(e){toast("加载模型失败","err",e.message)}
+}
+function renderModels(){
+  const q=(document.getElementById("modelFilter").value||"").toLowerCase();
+  const box=document.getElementById("modelList");box.innerHTML="";
+  let shown=0;
+  for(const m of modelCatalog){
+    if(q && !(String(m.id).toLowerCase().includes(q)||String(m.name||"").toLowerCase().includes(q)))continue;
+    shown++;
+    const el=document.createElement("label");
+    el.style.cssText="display:flex;align-items:center;gap:8px;color:var(--fg);font-size:13px;margin:0;padding:6px 8px;border:1px solid var(--line);border-radius:8px;cursor:pointer";
+    const cb=document.createElement("input");cb.type="checkbox";cb.style.width="auto";cb.checked=modelState[m.id]!==false;
+    cb.addEventListener("change",()=>{modelState[m.id]=cb.checked});
+    const nm=document.createElement("span");nm.textContent=m.name||m.id;
+    const idt=document.createElement("span");idt.className="muted";idt.style.cssText="font-size:11px;margin-left:auto";idt.textContent=m.id;
+    el.appendChild(cb);el.appendChild(nm);el.appendChild(idt);
+    box.appendChild(el);
+  }
+  if(!shown){box.innerHTML='<div class="muted" style="padding:8px">无匹配模型</div>'}
+}
+function modelSelectAll(v){for(const m of modelCatalog){modelState[m.id]=v}renderModels()}
+async function saveModels(){
+  const disabled=modelCatalog.filter(m=>modelState[m.id]===false).map(m=>m.id);
+  try{await api("/models/config",{method:"POST",body:JSON.stringify({disabled})});
+    toast("模型设置已保存","ok",disabled.length?("已隐藏 "+disabled.length+" 个模型"):"已开放全部模型");
+  }catch(e){toast("保存失败","err",e.message)}
+}
+
+(function init(){
+  const k=getKey();
+  if(k){enter()}else{showAuth()}
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,231 @@
+package main
+
+import (
+	"encoding/json"
+	"testing"
+
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
+
+	"qoder2api/account"
+)
+
+func TestParseStoredBarePAT(t *testing.T) {
+	sa, err := parseStored([]byte("pt-abc123"))
+	if err != nil {
+		t.Fatalf("parse bare pat: %v", err)
+	}
+	if sa.Secret != "pt-abc123" || sa.AuthMode != "pat" {
+		t.Fatalf("unexpected: %+v", sa)
+	}
+}
+
+func TestParseStoredOAuth(t *testing.T) {
+	raw := []byte(`{"type":"qoder","device_token":"dt-xyz","refresh_token":"drt-1","region":"cn","name":"alice"}`)
+	sa, err := parseStored(raw)
+	if err != nil {
+		t.Fatalf("parse oauth: %v", err)
+	}
+	if sa.AuthMode != "oauth" || sa.Region != "cn" || sa.Name != "alice" {
+		t.Fatalf("unexpected: %+v", sa)
+	}
+	var payload map[string]string
+	if err := json.Unmarshal([]byte(sa.Secret), &payload); err != nil {
+		t.Fatalf("secret not json: %v", err)
+	}
+	if payload["device_token"] != "dt-xyz" {
+		t.Fatalf("secret device_token = %q", payload["device_token"])
+	}
+}
+
+func TestParseStoredPluginShape(t *testing.T) {
+	raw := []byte(`{"secret":"pt-1","region":"global","account_id":"u1","name":"bob","auth_mode":"pat"}`)
+	sa, err := parseStored(raw)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if sa.AccountID != "u1" || authIDFor(sa) != "qoder-u1" {
+		t.Fatalf("authID = %q", authIDFor(sa))
+	}
+}
+
+func TestRegistration(t *testing.T) {
+	raw, err := handleMethod(pluginabi.MethodPluginRegister, nil)
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	var env envelope
+	if err := json.Unmarshal(raw, &env); err != nil {
+		t.Fatalf("envelope: %v", err)
+	}
+	if !env.OK {
+		t.Fatalf("not ok: %s", raw)
+	}
+	var reg registration
+	if err := json.Unmarshal(env.Result, &reg); err != nil {
+		t.Fatalf("registration: %v", err)
+	}
+	if reg.SchemaVersion != pluginabi.SchemaVersion {
+		t.Fatalf("schema = %d", reg.SchemaVersion)
+	}
+	if !reg.Capabilities.Executor || !reg.Capabilities.AuthProvider || !reg.Capabilities.ModelProvider {
+		t.Fatalf("capabilities = %+v", reg.Capabilities)
+	}
+	if len(reg.Capabilities.ExecutorInputFormats) == 0 {
+		t.Fatal("no input formats")
+	}
+}
+
+func TestParseAuthOwnership(t *testing.T) {
+	// Another provider's file must not be claimed.
+	other := pluginapi.AuthParseRequest{Provider: "codex", FileName: "codex.json", RawJSON: []byte(`{"type":"codex","access_token":"x"}`)}
+	raw, _ := json.Marshal(other)
+	out, err := handleParseAuth(raw)
+	if err != nil {
+		t.Fatalf("parse auth: %v", err)
+	}
+	var env envelope
+	json.Unmarshal(out, &env)
+	var resp pluginapi.AuthParseResponse
+	json.Unmarshal(env.Result, &resp)
+	if resp.Handled {
+		t.Fatal("claimed another provider's file")
+	}
+}
+
+func TestParseStoredNested(t *testing.T) {
+	// CPA auth-file convention nests provider fields under "auth".
+	raw := []byte(`{"type":"qoder","provider":"qoder","disabled":true,"auth":{"secret":"pt-9","region":"global","account_id":"u9","auth_mode":"pat"}}`)
+	sa, err := parseStored(raw)
+	if err != nil {
+		t.Fatalf("parse nested: %v", err)
+	}
+	if sa.Secret != "pt-9" || sa.AccountID != "u9" || !sa.Disabled {
+		t.Fatalf("unexpected: %+v", sa)
+	}
+}
+
+func TestAuthFileDocRoundTrip(t *testing.T) {
+	sa := &storedAuth{Secret: "pt-1", Region: "global", AccountID: "u1", Name: "bob", AuthMode: "pat"}
+	doc := authFileDoc(sa)
+	var probe struct {
+		Type     string `json:"type"`
+		Provider string `json:"provider"`
+		Secret   string `json:"secret"`
+	}
+	if err := json.Unmarshal(doc, &probe); err != nil {
+		t.Fatalf("doc: %v", err)
+	}
+	if probe.Type != providerName || probe.Provider != providerName || probe.Secret != "pt-1" {
+		t.Fatalf("unexpected doc: %+v", probe)
+	}
+	back, err := parseStored(doc)
+	if err != nil {
+		t.Fatalf("round trip parse: %v", err)
+	}
+	if back.AccountID != "u1" || back.Secret != "pt-1" {
+		t.Fatalf("round trip: %+v", back)
+	}
+}
+
+func TestParseAuthOwn(t *testing.T) {
+	req := pluginapi.AuthParseRequest{Provider: "qoder", FileName: "qoder-u1.json", RawJSON: []byte(`{"type":"qoder","secret":"pt-1","region":"global","account_id":"u1","name":"bob"}`)}
+	raw, _ := json.Marshal(req)
+	out, err := handleParseAuth(raw)
+	if err != nil {
+		t.Fatalf("parse auth: %v", err)
+	}
+	var env envelope
+	json.Unmarshal(out, &env)
+	var resp pluginapi.AuthParseResponse
+	json.Unmarshal(env.Result, &resp)
+	if !resp.Handled {
+		t.Fatal("did not claim own file")
+	}
+	if resp.Auth.Provider != providerName {
+		t.Fatalf("provider = %q", resp.Auth.Provider)
+	}
+	if resp.Auth.ID != "" {
+		t.Fatalf("parse should leave ID empty, got %q", resp.Auth.ID)
+	}
+	if resp.Auth.FileName != "qoder-u1.json" {
+		t.Fatalf("filename = %q", resp.Auth.FileName)
+	}
+}
+
+func TestModelStatic(t *testing.T) {
+	out, err := handleModelStatic([]byte(`{}`))
+	if err != nil {
+		t.Fatalf("model static: %v", err)
+	}
+	var env envelope
+	json.Unmarshal(out, &env)
+	var resp pluginapi.ModelResponse
+	json.Unmarshal(env.Result, &resp)
+	if resp.Provider != providerName || len(resp.Models) == 0 {
+		t.Fatalf("unexpected model response: provider=%q models=%d", resp.Provider, len(resp.Models))
+	}
+}
+
+func TestClientNeedsSSEFrame(t *testing.T) {
+	if clientNeedsSSEFrame(map[string]any{"request_path": "/v1/chat/completions"}) {
+		t.Fatal("chat completions should not be framed")
+	}
+	if !clientNeedsSSEFrame(map[string]any{"request_path": "/v1/messages"}) {
+		t.Fatal("claude messages should be framed")
+	}
+}
+
+func TestModelSelectionFilter(t *testing.T) {
+	account.SetDataRoot(t.TempDir())
+	modelSelMu.Lock()
+	modelSelData = nil
+	modelSelMu.Unlock()
+	defer func() {
+		modelSelMu.Lock()
+		modelSelData = nil
+		modelSelMu.Unlock()
+	}()
+
+	all := staticModelsRaw()
+	if len(all) < 2 {
+		t.Fatalf("need at least 2 static models, got %d", len(all))
+	}
+	target := all[0].ID
+
+	if err := saveModelSelection(&modelSelection{Disabled: []string{target}}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	filtered := applyModelSelection(all)
+	for _, m := range filtered {
+		if m.ID == target {
+			t.Fatalf("%s should be filtered out", target)
+		}
+	}
+	if len(filtered) != len(all)-1 {
+		t.Fatalf("filtered len = %d, want %d", len(filtered), len(all)-1)
+	}
+}
+
+func TestModelConfigUpdate(t *testing.T) {
+	account.SetDataRoot(t.TempDir())
+	modelSelMu.Lock()
+	modelSelData = nil
+	modelSelMu.Unlock()
+	defer func() {
+		modelSelMu.Lock()
+		modelSelData = nil
+		modelSelMu.Unlock()
+	}()
+
+	body, _ := json.Marshal(map[string]any{"disabled": []string{"a", "b", "a", "", " A "}})
+	out := handleModelConfigUpdate(pluginapi.ManagementRequest{Body: body})
+	if err, ok := out["error"]; ok {
+		t.Fatalf("update error: %v", err)
+	}
+	dis, _ := out["disabled"].([]string)
+	// "a" and " A " dedupe case-insensitively, "" dropped.
+	if len(dis) != 2 {
+		t.Fatalf("disabled = %v (want 2 entries)", dis)
+	}
+}

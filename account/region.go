@@ -19,6 +19,7 @@ type Endpoints struct {
 	ModelListURL    string // model list
 	JobTokenURL     string // PAT exchange
 	OpenAPIHost     string // OpenAPI 主机（签到/活动等 /sash、/api 接口）
+	InferenceBase   string // 推理网关根（模型队列 /api/v2/service/ask/*）
 }
 
 var endpointsGlobal = Endpoints{
@@ -31,6 +32,7 @@ var endpointsGlobal = Endpoints{
 	ModelListURL:    "https://api2.qoder.sh/algo/api/v2/model/list?Encode=1",
 	JobTokenURL:     "https://center.qoder.sh/algo/api/v3/user/jobToken?Encode=1",
 	OpenAPIHost:     "openapi.qoder.sh",
+	InferenceBase:   "https://api2.qoder.sh/algo",
 }
 
 var endpointsCN = Endpoints{
@@ -43,6 +45,7 @@ var endpointsCN = Endpoints{
 	ModelListURL:    "https://gateway.qoder.com.cn/algo/api/v2/model/list?Encode=1",
 	JobTokenURL:     "https://gateway.qoder.com.cn/algo/api/v3/user/jobToken?Encode=1",
 	OpenAPIHost:     "openapi.qoder.com.cn",
+	InferenceBase:   "https://gateway.qoder.com.cn/algo",
 }
 
 // GetEndpoints 根据 region 返回对应端点配置，空值或未知值视为 global

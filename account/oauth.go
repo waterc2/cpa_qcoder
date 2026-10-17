@@ -137,6 +137,51 @@ func WaitLogin(loginID string) (*Account, error) {
 	}
 }
 
+// PollLoginOnce performs a single, non-blocking poll of a pending OAuth
+// session. It returns (nil, "", false, nil) while the user has not finished
+// authorizing, and (acct, secret, true, nil) on success, where secret is the
+// JSON payload {"device_token":...,"refresh_token":...}. This is the shape the
+// CPA plugin needs because the host drives the poll cadence itself.
+func PollLoginOnce(loginID string) (*Account, string, bool, error) {
+	pendingMu.Lock()
+	p := pending
+	pendingMu.Unlock()
+
+	if p == nil || p.loginID != loginID {
+		return nil, "", false, fmt.Errorf("no pending login for id %s", loginID)
+	}
+	if time.Now().After(p.deadline) {
+		return nil, "", false, fmt.Errorf("oauth login timed out")
+	}
+	select {
+	case <-p.ctx.Done():
+		return nil, "", false, fmt.Errorf("oauth login cancelled")
+	default:
+	}
+
+	ep := GetEndpoints(p.region)
+	deviceToken, refreshToken, err := pollToken(p.nonce, p.verifier, ep)
+	if err != nil {
+		return nil, "", false, nil // still pending
+	}
+	acct, err := BuildAccountFromToken(deviceToken, refreshToken, p.region)
+	if err != nil {
+		return nil, "", false, err
+	}
+
+	pendingMu.Lock()
+	if pending == p {
+		pending = nil
+	}
+	pendingMu.Unlock()
+
+	secretPayload, _ := json.Marshal(map[string]string{
+		"device_token":  deviceToken,
+		"refresh_token": refreshToken,
+	})
+	return acct, string(secretPayload), true, nil
+}
+
 func CancelLogin(loginID string) {
 	pendingMu.Lock()
 	defer pendingMu.Unlock()
@@ -193,8 +238,29 @@ func pollToken(nonce, verifier string, ep Endpoints) (string, string, error) {
 	return deviceToken, refreshToken, nil
 }
 
-// buildAccountFromToken 使用 device token 构建账号信息
+// buildAccountFromToken 使用 device token 构建账号信息并落盘 secret（独立服务用）。
 func buildAccountFromToken(deviceToken, refreshToken string, region Region, ep Endpoints) (*Account, error) {
+	acct, err := BuildAccountFromToken(deviceToken, refreshToken, region)
+	if err != nil {
+		return nil, err
+	}
+	secretPayload, err := json.Marshal(map[string]string{
+		"device_token":  deviceToken,
+		"refresh_token": refreshToken,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := SaveSecret(acct.ID, string(secretPayload)); err != nil {
+		return nil, err
+	}
+	return acct, nil
+}
+
+// BuildAccountFromToken 使用 device token 构建账号信息，但不持久化 secret。
+// CPA 插件把凭证存进 host auth store，不需要独立服务的文件存储。
+func BuildAccountFromToken(deviceToken, refreshToken string, region Region) (*Account, error) {
+	ep := GetEndpoints(region)
 	info, err := fetchUserInfo(deviceToken, ep)
 	if err != nil {
 		return nil, fmt.Errorf("fetch user info: %w", err)
@@ -206,7 +272,7 @@ func buildAccountFromToken(deviceToken, refreshToken string, region Region, ep E
 		id = newSimpleID()
 	}
 	now := time.Now()
-	acct := &Account{
+	return &Account{
 		ID:        id,
 		Name:      strGet(info, "name"),
 		Email:     strings.ToLower(strGet(info, "email")),
@@ -217,18 +283,7 @@ func buildAccountFromToken(deviceToken, refreshToken string, region Region, ep E
 		APIMode:   "openai",
 		Tags:      []string{},
 		CreatedAt: now,
-	}
-	secretPayload, err := json.Marshal(map[string]string{
-		"device_token":  deviceToken,
-		"refresh_token": refreshToken,
-	})
-	if err != nil {
-		return nil, err
-	}
-	if err := SaveSecret(id, string(secretPayload)); err != nil {
-		return nil, err
-	}
-	return acct, nil
+	}, nil
 }
 
 func fetchUserInfo(token string, ep Endpoints) (map[string]interface{}, error) {

@@ -173,6 +173,24 @@ func NewBridge(pat string, region account.Region, templateBase map[string]interf
 	}, nil
 }
 
+// Identity returns the authenticated upstream identity bound to this bridge.
+// It is used by the CPA plugin to populate auth labels from a single session
+// build instead of issuing a second jobToken/userinfo round-trip.
+func (b *Bridge) Identity() cosy.AuthIdentity {
+	if b == nil || b.sess == nil {
+		return cosy.AuthIdentity{}
+	}
+	return b.sess.Identity
+}
+
+// Region returns the region this bridge was built for.
+func (b *Bridge) Region() account.Region {
+	if b == nil {
+		return account.RegionGlobal
+	}
+	return b.region
+}
+
 // ListAvailableModels 通过 cosy 签名调用 /algo/api/v2/model/list 拉取上游模型清单。
 // 返回顶层 assistant 数组中 enable=true 的模型，按 is_default desc + display_name asc 排序。
 func (b *Bridge) ListAvailableModels() ([]QoderModel, error) {
@@ -430,6 +448,10 @@ func (b *Bridge) CallQoderWithOpts(ctx context.Context, agent string, messages [
 		body["request_set_id"] = cosy.NewUUID()
 		body["session_id"] = cosy.NewUUID()
 		body["aliyun_user_type"] = slot.sess.Identity.UserType
+		// Mirror the official CLI's per-request identity headers so upstream
+		// queue/telemetry can correlate the request set.
+		extra["x-request-set-id"] = StrVal(body, "request_set_id")
+		extra["x-session-id"] = StrVal(body, "session_id")
 		if biz, ok := body["business"].(map[string]interface{}); ok {
 			biz["id"] = cosy.NewUUID()
 			biz["begin_at"] = cosy.UnixMs()
@@ -441,7 +463,7 @@ func (b *Bridge) CallQoderWithOpts(ctx context.Context, agent string, messages [
 		}
 		logger.Debug("callQoder request body: %s", func() string { d, _ := json.Marshal(body); return string(d) }())
 
-		emitted, err := b.streamWithSlot(ctx, slot, qurl, body, extra, onDelta)
+		emitted, err := b.streamWithQueueRecovery(ctx, slot, qurl, body, extra, onDelta)
 		if err == nil {
 			b.noteSlotSuccess(slot.ID)
 			return nil

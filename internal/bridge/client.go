@@ -78,6 +78,11 @@ func (c *BearerClient) CallGetForTest(fullURL string) (map[string]interface{}, e
 // callGet 用 cosy 签名发送 GET 请求，body 部分参与签名时为空字符串。
 // 用于 /algo/api/v2/model/list 之类的纯查询接口。
 func (c *BearerClient) callGet(fullURL string) (map[string]interface{}, error) {
+	return c.callGetCtx(context.Background(), fullURL)
+}
+
+// callGetCtx 是 callGet 的 context 版本，供模型队列轮询等可取消场景使用。
+func (c *BearerClient) callGetCtx(ctx context.Context, fullURL string) (map[string]interface{}, error) {
 	pathSig, err := PathSigFrom(fullURL)
 	if err != nil {
 		return nil, err
@@ -86,7 +91,7 @@ func (c *BearerClient) callGet(fullURL string) (map[string]interface{}, error) {
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequest("GET", fullURL, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", fullURL, nil)
 	if err != nil {
 		return nil, err
 	}
