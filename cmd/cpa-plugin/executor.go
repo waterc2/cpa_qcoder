@@ -177,6 +177,7 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 	}
 
 	var full strings.Builder
+	var reasoning strings.Builder
 	var toolCalls []interface{}
 	var inTok, outTok int
 	ctx, cancel := newExecContext()
@@ -190,6 +191,9 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 		}
 		if d.Content != "" {
 			full.WriteString(d.Content)
+		}
+		if d.Reasoning != "" {
+			reasoning.WriteString(d.Reasoning)
 		}
 		if d.ToolCalls != nil {
 			toolCalls = append(toolCalls, d.ToolCalls...)
@@ -207,6 +211,10 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 	created := cosy.UnixSec()
 	finish := "stop"
 	message := map[string]interface{}{"role": "assistant", "content": full.String()}
+	if reasoning.Len() > 0 {
+		// OpenAI-compatible reasoning passthrough (DeepSeek/Qwen convention).
+		message["reasoning_content"] = reasoning.String()
+	}
 	if len(toolCalls) > 0 {
 		finish = "tool_calls"
 		message["tool_calls"] = toolCalls
@@ -306,6 +314,10 @@ func collectStream(ctx context.Context, b *bridge.Bridge, qr *qoderRequest, fram
 			delta["role"] = "assistant"
 			delta["content"] = d.Content
 		}
+		if d.Reasoning != "" {
+			delta["role"] = "assistant"
+			delta["reasoning_content"] = d.Reasoning
+		}
 		if d.ToolCalls != nil {
 			delta["tool_calls"] = d.ToolCalls
 			toolCallBuf = append(toolCallBuf, d.ToolCalls...)
@@ -361,6 +373,10 @@ func pumpStream(ctx context.Context, cancel context.CancelFunc, streamID string,
 		if d.Content != "" {
 			delta["role"] = "assistant"
 			delta["content"] = d.Content
+		}
+		if d.Reasoning != "" {
+			delta["role"] = "assistant"
+			delta["reasoning_content"] = d.Reasoning
 		}
 		if d.ToolCalls != nil {
 			delta["tool_calls"] = d.ToolCalls
