@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -38,10 +39,44 @@ type QueueError struct {
 	WaitTime          int
 }
 
-// MaxQueueWait bounds how long a single request will wait for the model queue
-// to clear. The official CLI defaults to 1h (QODER_MODEL_QUEUE_MAX_WAIT_MS);
-// we default lower so a stalled queue does not pin a client request forever.
-var MaxQueueWait = 10 * time.Minute
+// MaxQueueWait bounds the total time a single client request will wait for the
+// model queue to clear. The official CLI defaults to 1h
+// (QODER_MODEL_QUEUE_MAX_WAIT_MS); we default lower so a stalled queue does not
+// pin a client request forever.
+//
+// Overridable:
+//   - QODER2API_QUEUE_MAX_WAIT (Go duration, e.g. "2m")
+//   - QODER_MODEL_QUEUE_MAX_WAIT_MS (integer milliseconds, official CLI name)
+var MaxQueueWait = envQueueDuration("QODER2API_QUEUE_MAX_WAIT", "QODER_MODEL_QUEUE_MAX_WAIT_MS", 5*time.Minute)
+
+// PerAccountQueueWait bounds how long a single account waits in the queue
+// before the request fails over to the next account. A per-account cap avoids
+// burning the whole MaxQueueWait on one queued account when another account (or
+// a fresh queue slot) might be free. Set <= 0 to disable per-account failover
+// and wait on one account up to MaxQueueWait.
+//
+// Overridable via QODER2API_QUEUE_PER_ACCOUNT_WAIT (Go duration, e.g. "45s").
+var PerAccountQueueWait = envQueueDuration("QODER2API_QUEUE_PER_ACCOUNT_WAIT", "", 60*time.Second)
+
+// envQueueDuration parses a Go duration from primary, or an integer number of
+// milliseconds from msEnv (used for the official CLI's env name).
+func envQueueDuration(primary, msEnv string, def time.Duration) time.Duration {
+	if v := strings.TrimSpace(os.Getenv(primary)); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+		logger.Error("invalid %s=%q, falling back to default %s", primary, v, def)
+	}
+	if msEnv != "" {
+		if v := strings.TrimSpace(os.Getenv(msEnv)); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				return time.Duration(n) * time.Millisecond
+			}
+			logger.Error("invalid %s=%q, falling back to default %s", msEnv, v, def)
+		}
+	}
+	return def
+}
 
 // QueuePollInterval is the fallback wait between queue retries when upstream
 // does not return an explicit retryAfterSeconds/waitTime.
@@ -240,7 +275,8 @@ func (b *Bridge) waitForQueue(ctx context.Context, slot *Slot, qe *QueueError, r
 			return ctx.Err()
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("model queue wait exceeded %s (model=%s queueType=%s)", MaxQueueWait, modelKey, queueType)
+			return fmt.Errorf("model queue wait exceeded (model=%s queueType=%s deadline=%s)",
+				modelKey, queueType, deadline.Format(time.RFC3339))
 		}
 
 		wait := time.Duration(qe.RetryAfterSeconds) * time.Second
@@ -287,10 +323,10 @@ func (b *Bridge) waitForQueue(ctx context.Context, slot *Slot, qe *QueueError, r
 
 // streamWithQueueRecovery wraps streamWithSlot with model-queue waiting. When
 // upstream signals the model is queued, it polls the queue and retries the same
-// slot until the model frees up or MaxQueueWait elapses, instead of failing the
-// request or failing over immediately.
-func (b *Bridge) streamWithQueueRecovery(ctx context.Context, slot *Slot, qurl string, body map[string]interface{}, extra map[string]string, onDelta func(Delta)) (bool, error) {
-	deadline := time.Now().Add(MaxQueueWait)
+// slot until the model frees up or deadline elapses, instead of failing the
+// request or failing over immediately. deadline is the absolute time budget for
+// this slot (see PerAccountQueueWait / MaxQueueWait).
+func (b *Bridge) streamWithQueueRecovery(ctx context.Context, slot *Slot, qurl string, body map[string]interface{}, extra map[string]string, deadline time.Time, onDelta func(Delta)) (bool, error) {
 	emittedAny := false
 	queuedOnce := false
 	startedAt := time.Now()

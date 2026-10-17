@@ -148,3 +148,44 @@ func (b *Bridge) pickSlotForModel(model string, exclude map[string]struct{}) (*S
 	// 池内同 region 账号目录均不含该模型：仍在同 region 内兜底。
 	return b.pool.Pick(exclude, sameRegion)
 }
+
+// countSlotsForModel 返回当前可用的同 region、支持该模型的账号数（排除 exclude）。
+// 用于判断排队换号是否还有意义：只有多于 1 个可用账号才值得设置单账号
+// 排队上限，否则应在最后一个账号上等满 MaxQueueWait。
+func (b *Bridge) countSlotsForModel(model string, exclude map[string]struct{}) int {
+	if b.pool == nil {
+		if _, ok := b.pickSlot(exclude); ok {
+			return 1
+		}
+		return 0
+	}
+
+	wantRegion := b.region
+	if wantRegion == "" {
+		b.pool.mu.Lock()
+		for _, s := range b.pool.slots {
+			wantRegion = s.Region
+			break
+		}
+		b.pool.mu.Unlock()
+	}
+
+	now := time.Now()
+	count := 0
+	for _, s := range b.pool.snapshot() {
+		if _, skip := exclude[s.ID]; skip {
+			continue
+		}
+		if wantRegion != "" && s.Region != wantRegion {
+			continue
+		}
+		if !s.available(now) {
+			continue
+		}
+		b.ensureCatalog(s)
+		if b.slotSupportsModel(s, model) {
+			count++
+		}
+	}
+	return count
+}

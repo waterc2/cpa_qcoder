@@ -10,6 +10,7 @@ import (
 	"qoder2api/internal/cosy"
 	"sort"
 	"strings"
+	"time"
 
 	"qoder2api/account"
 	"qoder2api/logger"
@@ -444,6 +445,9 @@ func (b *Bridge) CallQoderWithOpts(ctx context.Context, agent string, messages [
 	// 可换号类（额度/频控/瞬时），就冷却该账号并换下一个；已发出内容或
 	// 客户端参数错/内容审核则立即上抛——避免重复内容、避免无意义换号。
 	tried := make(map[string]struct{})
+	// 整个请求的排队总预算；单账号再叠加 PerAccountQueueWait，
+	// 超时就让外层换号，避免一个排队账号耗掉全部预算。
+	queueDeadline := time.Now().Add(MaxQueueWait)
 	var lastErr error
 	for {
 		slot, ok := b.pickSlotForModel(model, tried)
@@ -476,7 +480,16 @@ func (b *Bridge) CallQoderWithOpts(ctx context.Context, agent string, messages [
 		}
 		logger.Debug("callQoder request body: %s", func() string { d, _ := json.Marshal(body); return string(d) }())
 
-		emitted, err := b.streamWithQueueRecovery(ctx, slot, qurl, body, extra, onDelta)
+		// 单账号排队等待上限：仅当池内还有其它可用账号时才启用，
+		// 超时则返回 10605 让外层换号；单账号/最后一个账号等满总预算。
+		slotDeadline := queueDeadline
+		if PerAccountQueueWait > 0 && b.countSlotsForModel(model, tried) > 1 {
+			if d := time.Now().Add(PerAccountQueueWait); d.Before(slotDeadline) {
+				slotDeadline = d
+			}
+		}
+
+		emitted, err := b.streamWithQueueRecovery(ctx, slot, qurl, body, extra, slotDeadline, onDelta)
 		if err == nil {
 			b.noteSlotSuccess(slot.ID)
 			return nil

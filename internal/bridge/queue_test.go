@@ -3,6 +3,7 @@ package bridge
 import (
 	"encoding/json"
 	"testing"
+	"time"
 )
 
 func TestParseQueueErrorNested(t *testing.T) {
@@ -47,5 +48,32 @@ func TestParseQueueErrorAvailable(t *testing.T) {
 	}
 	if qe.IsQueued || !qe.ServiceAvailable || qe.RetryAfterSeconds != 2 {
 		t.Fatalf("unexpected: %+v", qe)
+	}
+}
+
+func TestEnvQueueDuration(t *testing.T) {
+	const primary, msEnv = "QODER2API_QUEUE_MAX_WAIT", "QODER_MODEL_QUEUE_MAX_WAIT_MS"
+	def := 3 * time.Minute
+
+	t.Setenv(primary, "")
+	t.Setenv(msEnv, "")
+	if got := envQueueDuration(primary, msEnv, def); got != def {
+		t.Fatalf("default = %s, want %s", got, def)
+	}
+
+	t.Setenv(primary, "90s")
+	if got := envQueueDuration(primary, msEnv, def); got != 90*time.Second {
+		t.Fatalf("duration = %s, want 90s", got)
+	}
+
+	t.Setenv(primary, "")
+	t.Setenv(msEnv, "45000")
+	if got := envQueueDuration(primary, msEnv, def); got != 45*time.Second {
+		t.Fatalf("ms = %s, want 45s", got)
+	}
+
+	t.Setenv(msEnv, "bogus")
+	if got := envQueueDuration(primary, msEnv, def); got != def {
+		t.Fatalf("bogus ms fallback = %s, want %s", got, def)
 	}
 }
