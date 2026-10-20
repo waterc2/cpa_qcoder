@@ -406,6 +406,10 @@ func ParseQuotaPayload(result map[string]interface{}, plan string) *QuotaInfo {
 		}
 	}
 
+	// 专属资源包（活动奖励，如 SOTA 专属积分）。单独成桶，
+	// 通常带独立过期时间，不在 user/addon 额度内。
+	info.DedicatedPackages = extractDedicatedPackages(result)
+
 	return info
 }
 
@@ -418,6 +422,61 @@ func extractBucketAny(data map[string]interface{}, keys ...string) *QuotaBucket 
 		}
 	}
 	return nil
+}
+
+// extractDedicatedPackages 解析上游 dedicatedResourcePackages 数组。
+func extractDedicatedPackages(data map[string]interface{}) []DedicatedPackage {
+	raw, ok := data["dedicatedResourcePackages"].([]interface{})
+	if !ok || len(raw) == 0 {
+		return nil
+	}
+	out := make([]DedicatedPackage, 0, len(raw))
+	for _, item := range raw {
+		obj, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		p := DedicatedPackage{
+			ID:          stringOf(obj, "id"),
+			Name:        stringOf(obj, "name"),
+			Description: stringOf(obj, "description"),
+			Used:        toFloat(obj, "used"),
+			Total:       toFloat(obj, "total"),
+			Remaining:   toFloat(obj, "remaining"),
+			Unit:        stringOf(obj, "unit"),
+			ExpiresAtMs: int64(toFloat(obj, "expiresAt")),
+			Status:      stringOf(obj, "status"),
+			Available:   obj["available"] == true,
+		}
+		if labels, ok := obj["displayLabels"].([]interface{}); ok {
+			for _, li := range labels {
+				lo, ok := li.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				l := DedicatedPkgLabel{
+					Dimension: stringOf(lo, "dimension"),
+					Value:     stringOf(lo, "value"),
+				}
+				if i18n, ok := lo["valueI18n"].(map[string]interface{}); ok {
+					l.ValueI18n = map[string]string{}
+					for k, v := range i18n {
+						if s, ok := v.(string); ok {
+							l.ValueI18n[k] = s
+						}
+					}
+				}
+				p.Labels = append(p.Labels, l)
+			}
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+func stringOf(m map[string]interface{}, key string) string {
+	s, _ := m[key].(string)
+	return s
 }
 
 func extractBucket(data map[string]interface{}, key string) *QuotaBucket {

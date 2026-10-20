@@ -214,7 +214,7 @@ async function loadCredits(){
       if(!q){c.innerHTML='<span class="muted">-</span>';continue}
       if(q.error){c.innerHTML='<span class="tag err" title="'+esc(q.error)+'">失败</span>';continue}
       const cls=q.available_credits>0?"ok":"warn";
-      c.innerHTML='<span class="tag '+cls+'" title="用户/加油包/组织">'+esc(q.available_credits)+'</span>';
+      c.innerHTML='<span class="tag '+cls+'" title="用户/加油包/组织（专属资源包另列）">'+esc(q.available_credits)+'</span>';
     }
   }catch(e){toast("积分刷新失败","err",e.message)}
 }
@@ -227,6 +227,15 @@ async function quota(id){
     if(q.user_quota)buckets.push(`套餐 ${q.user_quota.remaining}/${q.user_quota.total}`);
     if(q.addon_quota)buckets.push(`加油包 ${q.addon_quota.remaining}/${q.addon_quota.total}`);
     if(q.org_resource_package)buckets.push(`组织 ${q.org_resource_package.remaining}/${q.org_resource_package.total}`);
+    for(const p of (q.dedicated_packages||[])){
+      let title=p.name||"专属资源包";
+      for(const l of (p.labels||[])){
+        if(l.dimension==="title")title=(l.value_i18n&&l.value_i18n["zh-CN"])||l.value||title;
+      }
+      const rem=p.remaining!=null?p.remaining:((p.total||0)-(p.used||0));
+      const exp=p.expires_at_ms?`（${new Date(p.expires_at_ms).toLocaleDateString("zh-CN")} 过期）`:'';
+      buckets.push(`🎁 ${title} ${rem}/${p.total||0}${exp}`);
+    }
     const avail=q.available_credits!=null?q.available_credits:0;
     toast("额度", "ok", `套餐: ${q.plan||"-"} · 可用积分: ${avail}${buckets.length?" · "+buckets.join(" · "):""}`);
   }catch(e){toast("额度查询失败","err",e.message)}

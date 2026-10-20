@@ -514,14 +514,49 @@
         const cls = pct >= 90 ? 'bad' : (pct >= 70 ? 'warn' : '');
         html += `
           <div class="quota-block addon-block">
-            <strong>个人拓展包</strong>: 
+            <strong>个人拓展包</strong>:
             已用 ${fmtNum(u)} / ${fmtNum(t)} · 剩余 ${fmtNum(r)}<br/>
             <div class="bar ${cls}"><i style="width:${pct}%"></i></div>
           </div>
         `;
       } else {
       }
-      
+
+      // 专属资源包（活动奖励，如 SOTA 专属积分）：单独成桶，可能带过期时间
+      const pkgs = q.dedicated_packages || [];
+      for (const p of pkgs) {
+        const u = p.used || 0;
+        const t = p.total || 0;
+        const r = p.remaining != null ? p.remaining : (t - u);
+        const pct = t > 0 ? Math.min(100, Math.round((u / t) * 100)) : 0;
+        const cls = pct >= 90 ? 'bad' : (pct >= 70 ? 'warn' : '');
+        // 标签取中文优先
+        let title = p.name || '专属资源包';
+        let desc = '';
+        for (const l of (p.labels || [])) {
+          if (l.dimension === 'title') title = (l.value_i18n && l.value_i18n['zh-CN']) || l.value || title;
+          if (l.dimension === 'description') desc = (l.value_i18n && l.value_i18n['zh-CN']) || l.value || desc;
+        }
+        // 过期提示
+        let exp = '';
+        if (p.expires_at_ms) {
+          const d = new Date(p.expires_at_ms);
+          const days = Math.ceil((p.expires_at_ms - Date.now()) / 86400000);
+          const dstr = d.toLocaleDateString('zh-CN');
+          const urgent = days <= 3 ? ' style="color:var(--bad);font-weight:600"' : '';
+          exp = `<div${urgent}>⏳ ${dstr} 过期（剩 ${days} 天）</div>`;
+        }
+        html += `
+          <div class="quota-block addon-block">
+            <strong>🎁 ${title}</strong>: 
+            已用 ${fmtNum(u)} / ${fmtNum(t)} · 剩余 ${fmtNum(r)}<br/>
+            <div class="bar ${cls}"><i style="width:${pct}%"></i></div>
+            ${exp}
+            ${desc ? `<div class="muted" style="font-size:11px;margin-top:2px">${desc}</div>` : ''}
+          </div>
+        `;
+      }
+
       return html;
     }
 

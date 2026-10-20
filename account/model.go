@@ -63,10 +63,11 @@ type Settings struct {
 }
 
 type QuotaInfo struct {
-	Plan               string       `json:"plan"`
-	UserQuota          *QuotaBucket `json:"user_quota,omitempty"`
-	AddonQuota         *QuotaBucket `json:"addon_quota,omitempty"`
-	OrgResourcePackage *QuotaBucket `json:"org_resource_package,omitempty"`
+	Plan               string             `json:"plan"`
+	UserQuota          *QuotaBucket       `json:"user_quota,omitempty"`
+	AddonQuota         *QuotaBucket       `json:"addon_quota,omitempty"`
+	OrgResourcePackage *QuotaBucket       `json:"org_resource_package,omitempty"`
+	DedicatedPackages  []DedicatedPackage `json:"dedicated_packages,omitempty"`
 	// AvailableCredits is the sum of remaining credits across every bucket
 	// (user + add-on + org). This is what the official CLI shows as
 	// "Available Credits" and is more meaningful than any single bucket:
@@ -75,6 +76,30 @@ type QuotaInfo struct {
 	AvailableCredits float64 `json:"available_credits"`
 	IsQuotaExceeded  bool    `json:"is_quota_exceeded"`
 	ExpiresAt        int64   `json:"expires_at,omitempty"`
+}
+
+// DedicatedPackage 上游「专属资源包」额度（dedicatedResourcePackages）。
+// 活动奖励（如 SOTA 专属积分）单独成桶，不与 user/addon 混合，
+// 通常带独立过期时间与使用范围限制。
+type DedicatedPackage struct {
+	ID          string              `json:"id,omitempty"`
+	Name        string              `json:"name,omitempty"`
+	Description string              `json:"description,omitempty"`
+	Used        float64             `json:"used"`
+	Total       float64             `json:"total"`
+	Remaining   float64             `json:"remaining"`
+	Unit        string              `json:"unit,omitempty"`
+	ExpiresAtMs int64               `json:"expires_at_ms,omitempty"`
+	Available   bool                `json:"available,omitempty"`
+	Status      string              `json:"status,omitempty"`
+	Labels      []DedicatedPkgLabel `json:"labels,omitempty"`
+}
+
+// DedicatedPkgLabel 资源包的展示标签（上游 displayLabels，含多语言）。
+type DedicatedPkgLabel struct {
+	Dimension string            `json:"dimension,omitempty"`
+	Value     string            `json:"value,omitempty"`
+	ValueI18n map[string]string `json:"value_i18n,omitempty"`
 }
 
 type QuotaBucket struct {

@@ -68,3 +68,40 @@ func TestParseQuotaPayloadOrgBucket(t *testing.T) {
 		t.Fatalf("available credits = %v, want 40", info.AvailableCredits)
 	}
 }
+
+func TestParseQuotaPayloadDedicatedPackages(t *testing.T) {
+	raw := `{
+		"userQuota": {"total": 300, "used": 300, "remaining": 0, "unit": "credits"},
+		"dedicatedResourcePackages": [{
+			"id": "pkg_sota",
+			"name": "SOTA 专属积分",
+			"used": 200,
+			"total": 2000,
+			"remaining": 1800,
+			"unit": "credits",
+			"expiresAt": 1793305019110,
+			"available": true,
+			"status": "active",
+			"displayLabels": [{"dimension": "title", "value": "SOTA", "valueI18n": {"zh-CN": "SOTA 专属积分"}}]
+		}]
+	}`
+	var result map[string]interface{}
+	if err := json.Unmarshal([]byte(raw), &result); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	info := ParseQuotaPayload(result, "Pro Trial")
+	if len(info.DedicatedPackages) != 1 {
+		t.Fatalf("dedicated packages = %+v", info.DedicatedPackages)
+	}
+	p := info.DedicatedPackages[0]
+	if p.ID != "pkg_sota" || p.Remaining != 1800 || !p.Available || p.ExpiresAtMs == 0 {
+		t.Fatalf("package = %+v", p)
+	}
+	if len(p.Labels) != 1 || p.Labels[0].ValueI18n["zh-CN"] != "SOTA 专属积分" {
+		t.Fatalf("labels = %+v", p.Labels)
+	}
+	// 专属资源包单独成桶，不并入 AvailableCredits（与上游语义一致）。
+	if info.AvailableCredits != 0 {
+		t.Fatalf("available credits = %v, want 0", info.AvailableCredits)
+	}
+}

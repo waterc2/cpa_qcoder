@@ -14,7 +14,7 @@
 - OAuth 设备登录、PAT 导入，设备令牌自动刷新
 - 模型列表（静态 + 按账号动态）、模型开关
 - OpenAI `chat/completions`（流式 / 非流式）
-- 额度查询、每日签到（手动 + 定时）
+- 额度查询（含专属资源包）、每日签到（手动 + 定时）
 - 内嵌管理面板
 
 ## 构建
@@ -123,3 +123,9 @@ cmd/cpa-plugin/
 插件复用 `qoder2api/account`、`internal/cosy`、`internal/bridge`；上游核心只保留
 最小补丁（`account/oauth.go`、`account/region.go`、`internal/bridge/*`、`go.mod`），
 同步上游时按此清单解决冲突。
+
+## 上游同步
+
+- 2026-10-20：合并 [qoder2api](https://github.com/Zhengyuuuui/qoder2api)
+  `4789816..8e02f24`，含专属资源包（活动积分）额度解析、账号签到灰度差异与
+  模型清单快照。细节见 [docs/upstream-notes.md](docs/upstream-notes.md)。

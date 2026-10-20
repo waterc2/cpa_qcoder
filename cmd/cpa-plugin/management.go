@@ -369,15 +369,16 @@ func handleQuota(req pluginapi.ManagementRequest) map[string]any {
 
 // accountQuotaView is one row of the batch /accounts/quotas response.
 type accountQuotaView struct {
-	AuthIndex  string               `json:"auth_index"`
-	ID         string               `json:"id"`
-	Plan       string               `json:"plan,omitempty"`
-	Available  float64              `json:"available_credits"`
-	User       *account.QuotaBucket `json:"user_quota,omitempty"`
-	Addon      *account.QuotaBucket `json:"addon_quota,omitempty"`
-	Org        *account.QuotaBucket `json:"org_resource_package,omitempty"`
-	IsExceeded bool                 `json:"is_quota_exceeded"`
-	Error      string               `json:"error,omitempty"`
+	AuthIndex  string                     `json:"auth_index"`
+	ID         string                     `json:"id"`
+	Plan       string                     `json:"plan,omitempty"`
+	Available  float64                    `json:"available_credits"`
+	User       *account.QuotaBucket       `json:"user_quota,omitempty"`
+	Addon      *account.QuotaBucket       `json:"addon_quota,omitempty"`
+	Org        *account.QuotaBucket       `json:"org_resource_package,omitempty"`
+	Dedicated  []account.DedicatedPackage `json:"dedicated_packages,omitempty"`
+	IsExceeded bool                       `json:"is_quota_exceeded"`
+	Error      string                     `json:"error,omitempty"`
 }
 
 // handleAllQuotas fetches live credits for every account in parallel (bounded
@@ -426,6 +427,7 @@ func handleAllQuotas() map[string]any {
 			view.User = q.UserQuota
 			view.Addon = q.AddonQuota
 			view.Org = q.OrgResourcePackage
+			view.Dedicated = q.DedicatedPackages
 			view.IsExceeded = q.IsQuotaExceeded
 			out[i] = view
 		}(i, f)
