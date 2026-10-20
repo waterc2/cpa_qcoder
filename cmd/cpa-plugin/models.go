@@ -11,24 +11,26 @@ import (
 
 // fallbackModels is the static model catalog used before an account has been
 // queried (and as a fallback when the upstream model list is unavailable).
-// Display names mirror the upstream /algo/api/v2/model/list response so the
-// panel never shows raw internal keys such as "qmodel_38max".
+// Display names, prices and reasoning flags mirror the 2026-10-20 Global
+// /algo/api/v2/model/list snapshot (see docs/upstream-notes.md). CN-only models
+// (q37fmodel / gm51model) are omitted here because the fallback has no region
+// context; a CN auth gets the live list after its first query.
 var fallbackModels = []bridge.QoderModel{
-	{Key: "auto", DisplayName: "Auto", PriceFactor: 0.5},
-	{Key: "ultimate", DisplayName: "Ultimate", PriceFactor: 0.4, IsReasoning: true},
-	{Key: "performance", DisplayName: "Performance", PriceFactor: 1.1, IsReasoning: true},
-	{Key: "efficient", DisplayName: "Efficient", PriceFactor: 0.3},
-	{Key: "qmodel_38max", DisplayName: "Qwen3.8-Max", PriceFactor: 0.2, IsReasoning: true},
-	{Key: "qfmodel", DisplayName: "Qwen3.8-Flash", PriceFactor: 0, IsReasoning: true},
-	{Key: "qmodel_latest", DisplayName: "Qwen3.7-Max", PriceFactor: 0.5, IsReasoning: true},
-	{Key: "qmodel", DisplayName: "Qwen3.7-Plus", PriceFactor: 0.1, IsReasoning: true},
-	{Key: "gmodel", DisplayName: "GLM-5.3", PriceFactor: 0.8},
-	{Key: "gfmodel", DisplayName: "GLM-5.3-Flash", PriceFactor: 0.1},
-	{Key: "kmodel_latest", DisplayName: "Kimi-K3", PriceFactor: 1.4, IsReasoning: true},
-	{Key: "kmodel", DisplayName: "Kimi-K2.8-Preview", PriceFactor: 0.8, IsReasoning: true},
-	{Key: "dmodel", DisplayName: "DeepSeek-V4-Pro", PriceFactor: 0.5, IsReasoning: true},
-	{Key: "dfmodel", DisplayName: "DeepSeek-Flash", PriceFactor: 0.1},
-	{Key: "mmodel", DisplayName: "MiniMax-M3", PriceFactor: 0.2, IsReasoning: true},
+	{Key: "auto", DisplayName: "Auto", PriceFactor: 0.5, ContextWindow: 200000, MaxOutputTokens: 16384},
+	{Key: "ultimate", DisplayName: "Ultimate", PriceFactor: 0.4, IsReasoning: true, ContextWindow: 200000, MaxOutputTokens: 32768},
+	{Key: "performance", DisplayName: "Performance", PriceFactor: 1.1, ContextWindow: 200000, MaxOutputTokens: 16384},
+	{Key: "efficient", DisplayName: "Efficient", PriceFactor: 0.3, ContextWindow: 200000, MaxOutputTokens: 16384},
+	{Key: "qmodel_38max", DisplayName: "Qwen3.8-Max", PriceFactor: 0.2, IsReasoning: true, ContextWindow: 200000, MaxOutputTokens: 32768},
+	{Key: "qfmodel", DisplayName: "Qwen3.8-Flash", PriceFactor: 0, IsReasoning: true, ContextWindow: 200000, MaxOutputTokens: 32768},
+	{Key: "qmodel_latest", DisplayName: "Qwen3.7-Max", PriceFactor: 0.5, ContextWindow: 200000, MaxOutputTokens: 16384},
+	{Key: "qmodel", DisplayName: "Qwen3.7-Plus", PriceFactor: 0.1, ContextWindow: 200000, MaxOutputTokens: 16384},
+	{Key: "gmodel", DisplayName: "GLM-5.3", PriceFactor: 0.8, IsReasoning: true, ContextWindow: 200000, MaxOutputTokens: 32768},
+	{Key: "gfmodel", DisplayName: "GLM-5.3-Flash", PriceFactor: 0.1, IsReasoning: true, ContextWindow: 200000, MaxOutputTokens: 32768},
+	{Key: "kmodel_latest", DisplayName: "Kimi-K3", PriceFactor: 1.4, ContextWindow: 200000, MaxOutputTokens: 16384},
+	{Key: "kmodel", DisplayName: "Kimi-K2.8-Preview", PriceFactor: 0.8, ContextWindow: 200000, MaxOutputTokens: 16384},
+	{Key: "dmodel", DisplayName: "DeepSeek-V4-Pro", PriceFactor: 0.5, IsReasoning: true, ContextWindow: 200000, MaxOutputTokens: 32768},
+	{Key: "dfmodel", DisplayName: "DeepSeek-Flash", PriceFactor: 0, IsReasoning: true, ContextWindow: 200000, MaxOutputTokens: 32768},
+	{Key: "mmodel", DisplayName: "MiniMax-M3.1-Flash", PriceFactor: 0.1, ContextWindow: 200000, MaxOutputTokens: 16384},
 }
 
 func staticModelsRaw() []pluginapi.ModelInfo {

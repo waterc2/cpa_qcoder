@@ -129,3 +129,5 @@ cmd/cpa-plugin/
 - 2026-10-20：合并 [qoder2api](https://github.com/Zhengyuuuui/qoder2api)
   `4789816..8e02f24`，含专属资源包（活动积分）额度解析、账号签到灰度差异与
   模型清单快照。细节见 [docs/upstream-notes.md](docs/upstream-notes.md)。
+- 2026-10-20：回退模型清单同步到上游快照（`mmodel` 更名、价格/推理标记/上下文），
+  并把 CLIProxyAPI SDK 从 v8.0.32 升到 v8.0.35（与当前宿主一致）。
