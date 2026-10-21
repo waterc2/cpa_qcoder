@@ -38,6 +38,7 @@ type storedAuth struct {
 	Plan        string              `json:"plan,omitempty"`
 	AuthMode    string              `json:"auth_mode,omitempty"`
 	Disabled    bool                `json:"disabled,omitempty"`
+	Priority    *int                `json:"priority,omitempty"`
 	Fingerprint *checkinFingerprint `json:"checkin_fingerprint,omitempty"`
 
 	rawJSON []byte
@@ -149,6 +150,12 @@ func parseStored(raw []byte) (*storedAuth, error) {
 	}
 	if v, ok := doc["disabled"]; ok {
 		_ = json.Unmarshal(v, &sa.Disabled)
+	}
+	if v, ok := doc["priority"]; ok {
+		var priority int
+		if json.Unmarshal(v, &priority) == nil {
+			sa.Priority = &priority
+		}
 	}
 	if fpRaw, ok := doc["checkin_fingerprint"]; ok {
 		var fp checkinFingerprint

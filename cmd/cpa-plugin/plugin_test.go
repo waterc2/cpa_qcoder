@@ -109,7 +109,8 @@ func TestParseStoredNested(t *testing.T) {
 }
 
 func TestAuthFileDocRoundTrip(t *testing.T) {
-	sa := &storedAuth{Secret: "pt-1", Region: "global", AccountID: "u1", Name: "bob", AuthMode: "pat"}
+	priority := 1
+	sa := &storedAuth{Secret: "pt-1", Region: "global", AccountID: "u1", Name: "bob", AuthMode: "pat", Priority: &priority}
 	doc := authFileDoc(sa)
 	var probe struct {
 		Type     string `json:"type"`
@@ -128,6 +129,9 @@ func TestAuthFileDocRoundTrip(t *testing.T) {
 	}
 	if back.AccountID != "u1" || back.Secret != "pt-1" {
 		t.Fatalf("round trip: %+v", back)
+	}
+	if back.Priority == nil || *back.Priority != 1 {
+		t.Fatalf("priority did not round trip: %+v", back.Priority)
 	}
 }
 
