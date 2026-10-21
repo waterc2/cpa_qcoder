@@ -75,12 +75,18 @@ func (b *Bridge) HandleClaudeMessages(w http.ResponseWriter, r *http.Request) {
 		if tp, _ := thinking["type"].(string); tp == "enabled" {
 			opts.IsReasoning = true
 		}
+		if bt, ok := thinking["budget_tokens"].(float64); ok && int(bt) > 0 {
+			opts.ThinkingBudget = int(bt)
+		}
+	}
+	if re, ok := req["reasoning_effort"].(string); ok {
+		opts.ReasoningEffort = strings.TrimSpace(re)
 	}
 	if mt, ok := req["max_tokens"].(float64); ok && int(mt) > 0 {
 		opts.MaxTokens = int(mt)
 	}
 
-	logger.Info("[Claude][%s] model=%s stream=%v tools=%v thinking=%v max_tokens=%d msgs=%d", reqID, model, stream, toolsEnabled, opts.IsReasoning, opts.MaxTokens, len(incomingMsgs))
+	logger.Info("[Claude][%s] model=%s stream=%v tools=%v thinking=%v effort=%s budget=%d max_tokens=%d msgs=%d", reqID, model, stream, toolsEnabled, opts.IsReasoning, opts.ReasoningEffort, opts.ThinkingBudget, opts.MaxTokens, len(incomingMsgs))
 
 	msgId := "msg_" + cosy.NewRequestID()
 	ctx := r.Context()

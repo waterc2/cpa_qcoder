@@ -118,9 +118,17 @@ func buildQoderRequest(raw []byte, modelOverride string, wantStream bool) (*qode
 	if mt, ok := oreq["max_tokens"].(float64); ok && int(mt) > 0 {
 		opts.MaxTokens = int(mt)
 	}
+	// OpenAI 标准 reasoning_effort（low/medium/high/...）与 Claude 风格的
+	// thinking.budget_tokens 都透传给上游的思考强度参数。
+	if re, ok := oreq["reasoning_effort"].(string); ok {
+		opts.ReasoningEffort = strings.TrimSpace(re)
+	}
 	if thinking, ok := oreq["thinking"].(map[string]interface{}); ok {
 		if tp, _ := thinking["type"].(string); tp == "enabled" {
 			opts.IsReasoning = true
+		}
+		if bt, ok := thinking["budget_tokens"].(float64); ok && int(bt) > 0 {
+			opts.ThinkingBudget = int(bt)
 		}
 	}
 

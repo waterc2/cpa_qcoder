@@ -44,6 +44,22 @@ func (b *Bridge) HandleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	prompt := ExtractLatestUserPrompt(incomingMsgs)
 	messages := BuildQoderMessages(b.templateMessages(), incomingMsgs, prompt, toolsEnabled)
 
+	opts := CallOpts{}
+	if re, ok := req["reasoning_effort"].(string); ok {
+		opts.ReasoningEffort = strings.TrimSpace(re)
+	}
+	if thinking, ok := req["thinking"].(map[string]interface{}); ok {
+		if tp, _ := thinking["type"].(string); tp == "enabled" {
+			opts.IsReasoning = true
+		}
+		if bt, ok := thinking["budget_tokens"].(float64); ok && int(bt) > 0 {
+			opts.ThinkingBudget = int(bt)
+		}
+	}
+	if mt, ok := req["max_tokens"].(float64); ok && int(mt) > 0 {
+		opts.MaxTokens = int(mt)
+	}
+
 	reqId := "chatcmpl-" + cosy.NewRequestID()
 	created := cosy.UnixSec()
 	ctx := r.Context()
@@ -58,7 +74,7 @@ func (b *Bridge) HandleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		var toolCallBuf []interface{}
 		var totalInputTokens, totalOutputTokens int
 
-		err = b.CallQoder(ctx, InferAgent(model), messages, model, tools, func(d Delta) {
+		err = b.CallQoderWithOpts(ctx, InferAgent(model), messages, model, tools, opts, func(d Delta) {
 			if d.Err != nil {
 				logger.Error("[Chat][%s] upstream error in stream callback: %v", reqID, d.Err)
 				return
@@ -131,7 +147,7 @@ func (b *Bridge) HandleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		var reasoning strings.Builder
 		var toolCallBuf []interface{}
 		var totalInputTokens, totalOutputTokens int
-		err = b.CallQoder(ctx, InferAgent(model), messages, model, tools, func(d Delta) {
+		err = b.CallQoderWithOpts(ctx, InferAgent(model), messages, model, tools, opts, func(d Delta) {
 			if d.InputTokens > 0 || d.OutputTokens > 0 {
 				totalInputTokens = d.InputTokens
 				totalOutputTokens = d.OutputTokens

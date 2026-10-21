@@ -314,6 +314,56 @@ func DeepCopyMap(m map[string]interface{}) map[string]interface{} {
 type CallOpts struct {
 	IsReasoning bool // 是否启用推理模式（对应上游 model_config.is_reasoning）
 	MaxTokens   int  // 客户端请求的 max_tokens，0 表示使用模板默认值
+	// ReasoningEffort 对应上游 parameters.reasoning_effort，官方取值为
+	// none/low/medium/high/xhigh/max（none 仅在模型 supports_disabled 时可用）。
+	ReasoningEffort string
+	// ThinkingBudget 对应上游 parameters.reasoning_budget_tokens（思考 token 预算）。
+	ThinkingBudget int
+}
+
+// validReasoningEfforts 是官方 CLI 接受的上游 reasoning_effort 取值。
+var validReasoningEfforts = map[string]bool{
+	"none": true, "low": true, "medium": true, "high": true, "xhigh": true, "max": true,
+}
+
+// applyReasoningParams 按官方 CLI 的逻辑把思考强度写进上游请求体：
+//
+//	effort=none       -> enable_thinking=false，删除预算，is_reasoning=false
+//	effort/budget 非空 -> enable_thinking=true，is_reasoning=true，可选预算
+//
+// 只设置了 thinking.enabled（无 effort/预算）时保持原有行为，仅由调用方置 is_reasoning。
+func applyReasoningParams(body map[string]interface{}, opts CallOpts) {
+	mc, _ := body["model_config"].(map[string]interface{})
+	params, _ := body["parameters"].(map[string]interface{})
+	if params == nil {
+		return
+	}
+	effort := strings.TrimSpace(opts.ReasoningEffort)
+	if effort != "" {
+		if !validReasoningEfforts[effort] {
+			logger.Error("ignoring invalid reasoning_effort %q", effort)
+			effort = ""
+		} else {
+			params["reasoning_effort"] = effort
+		}
+	}
+	if effort == "none" {
+		params["enable_thinking"] = false
+		delete(params, "reasoning_budget_tokens")
+		if mc != nil {
+			mc["is_reasoning"] = false
+		}
+		return
+	}
+	if effort != "" || opts.ThinkingBudget > 0 {
+		params["enable_thinking"] = true
+		if mc != nil {
+			mc["is_reasoning"] = true
+		}
+		if opts.ThinkingBudget > 0 {
+			params["reasoning_budget_tokens"] = opts.ThinkingBudget
+		}
+	}
 }
 
 func (b *Bridge) CallQoder(ctx context.Context, agent string, messages []interface{}, model string, tools interface{}, onDelta func(Delta)) error {
@@ -368,6 +418,7 @@ func (b *Bridge) CallQoderWithOpts(ctx context.Context, agent string, messages [
 			mc["is_reasoning"] = true
 		}
 	}
+	applyReasoningParams(body, opts)
 
 	if opts.MaxTokens > 0 {
 		if params, ok := body["parameters"].(map[string]interface{}); ok {
