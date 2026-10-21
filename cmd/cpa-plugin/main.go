@@ -237,6 +237,8 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 		return handleExecStream(request)
 	case pluginabi.MethodExecutorCountTokens:
 		return okEnvelope(pluginapi.ExecutorResponse{Payload: []byte(`{"input_tokens":0}`)})
+	case pluginabi.MethodUsageHandle:
+		return handleUsage(request)
 	case pluginabi.MethodManagementRegister:
 		var regReq pluginapi.ManagementRegistrationRequest
 		if err := json.Unmarshal(request, &regReq); err == nil {
@@ -285,6 +287,7 @@ type registrationCapability struct {
 	ExecutorInputFormats  []string                     `json:"executor_input_formats,omitempty"`
 	ExecutorOutputFormats []string                     `json:"executor_output_formats,omitempty"`
 	ManagementAPI         bool                         `json:"management_api"`
+	UsagePlugin           bool                         `json:"usage_plugin"`
 }
 
 type streamResponse struct {
@@ -316,6 +319,7 @@ func pluginRegistration() registration {
 			ExecutorInputFormats:  []string{"chat-completions"},
 			ExecutorOutputFormats: []string{"chat-completions"},
 			ManagementAPI:         true,
+			UsagePlugin:           true,
 		},
 	}
 }

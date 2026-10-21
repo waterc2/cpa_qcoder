@@ -37,6 +37,28 @@
   .muted{color:var(--muted)}
   .hidden{display:none}
   #authBox{max-width:380px;margin:60px auto}
+
+  .usage-sec{margin-top:4px}
+  .usage-hd{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;margin-bottom:12px}
+  .usage-grid{display:flex;gap:8px;flex-wrap:wrap}
+  .usage-item{background:#0c0e13;border:1px solid var(--line);border-radius:10px;padding:7px 11px;min-width:104px}
+  .usage-item .k{color:var(--muted);font-size:11px;margin-bottom:2px}
+  .usage-item .v{font-size:16px;font-weight:700}
+  .usage-item .v.ok{color:var(--ok)}
+  .usage-item .v.warn{color:var(--warn)}
+  .usage-item .v.err{color:var(--err)}
+  .usage-filters{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:10px}
+  .usage-filters select,.usage-filters input{background:#0c0e13;border:1px solid var(--line);border-radius:8px;padding:6px 8px;color:var(--fg);font-size:12px;width:auto}
+  .usage-filters .ftag{padding:6px 12px;font-size:12px}
+  .usage-filters .ftag.active{background:var(--accent);border-color:var(--accent);color:#fff}
+  .usage-filters .sp{color:var(--muted);font-size:12px}
+  .utbl{width:100%;border-collapse:collapse;font-size:12.5px;min-width:720px}
+  .utbl th,.utbl td{padding:8px 7px;border-bottom:1px solid var(--line);white-space:nowrap}
+  .utbl th{color:var(--muted);font-weight:500;font-size:11px;text-align:left}
+  .utbl td.num,.utbl th.num{text-align:right}
+  .utbl td.cr{color:var(--warn);font-weight:600}
+  .usage-loading{color:var(--muted);text-align:center;padding:22px}
+  .usage-meta{color:var(--muted);font-size:11px;margin-top:8px}
 </style>
 </head>
 <body>
@@ -65,7 +87,7 @@
 
     <div id="modelCard" class="card hidden">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap">
-        <div><b>模型管理</b> <span class="muted" style="font-size:12px">勾选要开放给 CPA 的模型</span></div>
+        <div><b>模型管理</b> <span class="muted" style="font-size:12px">勾选要开放给 CPA 的模型，并设置客户端看到的映射名称</span></div>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
           <button onclick="modelSelectAll(true)">全选</button>
           <button onclick="modelSelectAll(false)">全不选</button>
@@ -74,8 +96,8 @@
         </div>
       </div>
       <input id="modelFilter" placeholder="搜索模型…" oninput="renderModels()" style="margin-bottom:10px">
-      <div id="modelList" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:6px;max-height:440px;overflow:auto"></div>
-      <div class="muted" style="font-size:12px;margin-top:8px">未勾选的模型不会出现在 /v1/models，也不会被路由。</div>
+      <div id="modelList" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:6px;max-height:440px;overflow:auto"></div>
+      <div class="muted" style="font-size:12px;margin-top:8px">未勾选的模型不会出现在 /v1/models，也不会被路由。映射名称默认与原模型相同；修改后客户端用该名称请求，插件会路由回原模型。</div>
     </div>
 
     <div id="importCard" class="card hidden">
@@ -109,6 +131,33 @@
       </table>
       <div id="empty" class="muted hidden" style="padding:16px 0">暂无账号。点击「添加账号」导入 PAT，或在 CPA 主面板用 OAuth 登录。</div>
     </div>
+
+    <section class="card usage-sec" id="usageCard">
+      <div class="usage-hd">
+        <div><b>Qoder 使用日志</b> <span class="muted" style="font-size:12px">每次请求的账号 / 模型 / Token / 耗时</span></div>
+        <div class="usage-grid" id="usageSummaryBox">
+          <div class="usage-item"><div class="k">今日请求数</div><div class="v">-</div></div>
+          <div class="usage-item"><div class="k">今日 Token</div><div class="v">-</div></div>
+          <div class="usage-item"><div class="k">累计请求数</div><div class="v">-</div></div>
+          <div class="usage-item"><div class="k">累计 Token</div><div class="v">-</div></div>
+        </div>
+      </div>
+      <div class="usage-filters" id="usageFilters">
+        <button type="button" class="ftag active" data-range="today" onclick="setUsageRange('today',this)">今天</button>
+        <button type="button" class="ftag" data-range="yesterday" onclick="setUsageRange('yesterday',this)">昨天</button>
+        <button type="button" class="ftag" data-range="7d" onclick="setUsageRange('7d',this)">近 7 天</button>
+        <button type="button" class="ftag" data-range="custom" onclick="setUsageRange('custom',this)">自定义</button>
+        <select id="usageAcct" onchange="usageParams.account=this.value;loadUsage()"></select>
+        <span class="sp" id="usageRangeLabel"></span>
+      </div>
+      <div style="overflow:auto">
+        <table class="utbl">
+          <thead><tr><th>时间</th><th>账号</th><th>模型</th><th class="num">输入 Token</th><th class="num">输出 Token</th><th class="num">总 Token</th><th class="num">耗时</th><th>状态</th></tr></thead>
+          <tbody id="usageBody"><tr><td colspan="8"><div class="usage-loading">正在加载使用日志…</div></td></tr></tbody>
+        </table>
+      </div>
+      <div class="usage-meta" id="usageMeta"></div>
+    </section>
   </div>
 </div>
 <div id="toasts"></div>
@@ -139,7 +188,7 @@ function readUrlKey(){const m=new URLSearchParams(window.location.search).get("k
 function getKey(){return sessionStorage.getItem(SS_KEY)||readPanelKey()||readUrlKey()}
 function loadFromParent(){const k=readPanelKey()||readUrlKey();if(k){sessionStorage.setItem(SS_KEY,k);enter()}else toast("未能从主面板读取密钥，请手动粘贴","err")}
 function saveKey(){const v=document.getElementById("keyInput").value.trim();if(!v)return;sessionStorage.setItem(SS_KEY,v);enter()}
-function enter(){document.getElementById("authBox").classList.add("hidden");document.getElementById("main").classList.remove("hidden");load(false).then(()=>loadCredits());loadConfig()}
+function enter(){document.getElementById("authBox").classList.add("hidden");document.getElementById("main").classList.remove("hidden");load(false).then(()=>{loadCredits();initUsage()});loadConfig()}
 
 function authHeaders(){const k=getKey();return k?{"Authorization":"Bearer "+k}:{}}
 async function api(path,opts={}){
@@ -190,6 +239,7 @@ function render(){
       </td>`;
     tb.appendChild(tr);
   }
+  if(typeof renderUsageAccounts==="function")renderUsageAccounts();
 }
 async function checkinAll(){
   toast("正在签到全部账号…");
@@ -266,12 +316,12 @@ async function toggleConfig(){
 }
 
 // ---- model manager ----
-let modelCatalog=[], modelState={};
+let modelCatalog=[], modelState={}, modelAliases={};
 function showModels(){document.getElementById("modelCard").classList.remove("hidden");loadModels()}
 function hideModels(){document.getElementById("modelCard").classList.add("hidden")}
 async function loadModels(){
-  try{const r=await api("/models/config");modelCatalog=r.models||[];modelState={};
-    for(const m of modelCatalog){modelState[m.id]=m.enabled!==false}
+  try{const r=await api("/models/config");modelCatalog=r.models||[];modelState={};modelAliases={};
+    for(const m of modelCatalog){modelState[m.id]=m.enabled!==false;modelAliases[m.id]=m.alias||m.id}
     renderModels();
   }catch(e){toast("加载模型失败","err",e.message)}
 }
@@ -280,15 +330,18 @@ function renderModels(){
   const box=document.getElementById("modelList");box.innerHTML="";
   let shown=0;
   for(const m of modelCatalog){
-    if(q && !(String(m.id).toLowerCase().includes(q)||String(m.name||"").toLowerCase().includes(q)))continue;
+    const alias=modelAliases[m.id]||m.id;
+    if(q && !(String(m.id).toLowerCase().includes(q)||String(m.name||"").toLowerCase().includes(q)||String(alias).toLowerCase().includes(q)))continue;
     shown++;
-    const el=document.createElement("label");
-    el.style.cssText="display:flex;align-items:center;gap:8px;color:var(--fg);font-size:13px;margin:0;padding:6px 8px;border:1px solid var(--line);border-radius:8px;cursor:pointer";
+    const el=document.createElement("div");
+    el.style.cssText="display:flex;align-items:center;gap:8px;color:var(--fg);font-size:13px;margin:0;padding:7px 8px;border:1px solid var(--line);border-radius:8px";
     const cb=document.createElement("input");cb.type="checkbox";cb.style.width="auto";cb.checked=modelState[m.id]!==false;
     cb.addEventListener("change",()=>{modelState[m.id]=cb.checked});
-    const nm=document.createElement("span");nm.textContent=m.name||m.id;
-    const idt=document.createElement("span");idt.className="muted";idt.style.cssText="font-size:11px;margin-left:auto";idt.textContent=(m.price_factor!=null?m.price_factor+"x · ":"")+m.id;
-    el.appendChild(cb);el.appendChild(nm);el.appendChild(idt);
+    const nm=document.createElement("span");nm.textContent=m.name||m.id;nm.title=m.id;nm.style.cssText="white-space:nowrap;overflow:hidden;text-overflow:ellipsis";
+    const idt=document.createElement("span");idt.className="muted";idt.style.cssText="font-size:11px;white-space:nowrap";idt.textContent=(m.price_factor!=null?m.price_factor+"x · ":"")+m.id;
+    const inp=document.createElement("input");inp.type="text";inp.value=alias;inp.placeholder="映射名称";inp.title="映射名称（CPA 客户端看到的模型名），默认与原模型相同";inp.style.cssText="width:120px;padding:4px 6px;font-size:12px";
+    inp.addEventListener("input",()=>{modelAliases[m.id]=inp.value});
+    el.appendChild(cb);el.appendChild(nm);el.appendChild(idt);el.appendChild(inp);
     box.appendChild(el);
   }
   if(!shown){box.innerHTML='<div class="muted" style="padding:8px">无匹配模型</div>'}
@@ -296,9 +349,123 @@ function renderModels(){
 function modelSelectAll(v){for(const m of modelCatalog){modelState[m.id]=v}renderModels()}
 async function saveModels(){
   const disabled=modelCatalog.filter(m=>modelState[m.id]===false).map(m=>m.id);
-  try{await api("/models/config",{method:"POST",body:JSON.stringify({disabled})});
+  const aliases={};
+  for(const m of modelCatalog){
+    const alias=String(modelAliases[m.id]||"").trim();
+    if(alias && alias!==m.id)aliases[m.id]=alias;
+  }
+  try{await api("/models/config",{method:"POST",body:JSON.stringify({disabled,aliases})});
     toast("模型设置已保存","ok",disabled.length?("已隐藏 "+disabled.length+" 个模型"):"已开放全部模型");
   }catch(e){toast("保存失败","err",e.message)}
+}
+
+
+// ---- usage log (local JSONL, read-only) ----
+const usageParams={range:"today",account:"",from:"",to:""};
+let usageTimer=null, usageLoading=false;
+function fmtInt(n){const v=Number(n)||0;return v.toLocaleString("zh-CN")}
+function fmtTok(n){const v=Number(n)||0;return v>=1e6?(Math.round(v/1e4)/100)+"M":v>=1000?(Math.round(v/100)/10)+"K":""+v}
+function fmtDT(s){try{const d=new Date(s);if(isNaN(d.getTime()))return s||"-";const p=n=>String(n).padStart(2,"0");return d.getFullYear()+"-"+p(d.getMonth()+1)+"-"+p(d.getDate())+" "+p(d.getHours())+":"+p(d.getMinutes())}catch(e){return s||"-"}}
+function fmtDay(d){const p=n=>String(n).padStart(2,"0");return d.getFullYear()+"-"+p(d.getMonth()+1)+"-"+p(d.getDate())}
+function usagePresetRange(){
+  const now=new Date();
+  if(usageParams.range==="custom")return {from:usageParams.from||"",to:usageParams.to||""};
+  const days=usageParams.range==="today"?0:usageParams.range==="yesterday"?1:7;
+  const from=new Date(now.getFullYear(),now.getMonth(),now.getDate()-days);
+  if(days===0)return {from:fmtDay(from),to:""};
+  if(usageParams.range==="yesterday")return {from:fmtDay(from),to:fmtDay(new Date(now.getFullYear(),now.getMonth(),now.getDate()-1))};
+  return {from:fmtDay(from),to:""};
+}
+function usageRangeLabel(){
+  const now=new Date();
+  const days=usageParams.range==="today"?0:usageParams.range==="yesterday"?1:7;
+  const from=new Date(now.getFullYear(),now.getMonth(),now.getDate()-days);
+  if(usageParams.range==="custom")return (usageParams.from||"最早记录")+" ~ "+(usageParams.to||"现在");
+  if(usageParams.range==="yesterday")return fmtDay(from)+" ~ "+fmtDay(new Date(now.getFullYear(),now.getMonth(),now.getDate()-1));
+  if(usageParams.range==="7d")return "近 7 天（自 "+fmtDay(from)+" 起）";
+  return fmtDay(now)+"（今天）";
+}
+function setUsageRange(range,btn){
+  usageParams.range=range;
+  if(btn){document.querySelectorAll("#usageFilters .ftag").forEach(b=>b.classList.remove("active"));btn.classList.add("active")}
+  if(range==="custom"){
+    const f=prompt("开始日期（YYYY-MM-DD），留空表示最早记录");
+    if(f!==null)usageParams.from=f.trim();
+    const t=prompt("结束日期（YYYY-MM-DD），留空表示现在");
+    if(t!==null)usageParams.to=t.trim();
+  }
+  loadUsage();
+}
+function qp(name,val){return val?"&"+name+"="+encodeURIComponent(val):""}
+function renderUsageAccounts(){
+  const sel=document.getElementById("usageAcct");if(!sel)return;
+  const selected=sel.value||usageParams.account;
+  sel.innerHTML='<option value="">全部账号</option>';
+  for(const a of (accounts||[])){
+    const opt=document.createElement("option");
+    opt.value=a.auth_index||a.id||"";
+    opt.textContent=(a.name||a.email||a.auth_index||a.id||"-")+" · "+(a.region||"global");
+    sel.appendChild(opt);
+  }
+  sel.value=selected;
+}
+function renderUsageData(d){
+  const box=document.getElementById("usageSummaryBox");
+  const tbody=document.getElementById("usageBody");
+  const meta=document.getElementById("usageMeta");
+  const label=document.getElementById("usageRangeLabel");
+  if(label)label.textContent=usageRangeLabel();
+  const t=d.totals||{};
+  const useRange=usageParams.range!=="today"||!!usageParams.account;
+  const hdrReq=useRange?(t.range_requests||0):(t.today_requests||0);
+  const hdrTok=useRange?(t.range_tokens||0):(t.today_tokens||0);
+  const hdrFail=useRange?(t.range_failed||0):(t.today_failed||0);
+  if(box)box.innerHTML=
+    '<div class="usage-item"><div class="k">'+(useRange?usageRangeLabel():"今日")+'请求数</div><div class="v">'+fmtInt(hdrReq)+'</div></div>'+
+    '<div class="usage-item"><div class="k">'+(useRange?usageRangeLabel():"今日")+' Token</div><div class="v">'+fmtTok(hdrTok)+'</div></div>'+
+    '<div class="usage-item"><div class="k">累计请求数</div><div class="v">'+fmtInt(t.total_requests||0)+'</div></div>'+
+    '<div class="usage-item"><div class="k">累计 Token</div><div class="v">'+fmtTok(t.total_tokens||0)+'</div></div>';
+  const recs=d.records||[];
+  if(tbody){
+    if(!recs.length){
+      tbody.innerHTML='<tr><td colspan="8"><div class="usage-loading">此时间范围内暂无请求</div></td></tr>';
+    }else{
+      tbody.innerHTML=recs.map(r=>{
+        const fail=r.failed?('<span class="tag err" title="'+esc(r.error||"")+'">失败'+(r.status_code?(" "+r.status_code):"")+'</span>'):'<span class="tag ok">成功</span>';
+        const model=esc(r.model||"-")+(r.alias&&r.alias!==r.model?(' <span class="muted">('+esc(r.alias)+')</span>'):"");
+        return '<tr><td>'+esc(fmtDT(r.timestamp))+'</td><td>'+esc(r.nickname||r.email||r.auth_index||"-")+'</td><td>'+model+'</td><td class="num">'+fmtTok(r.input_tokens)+'</td><td class="num">'+fmtTok(r.output_tokens)+'</td><td class="num">'+fmtTok(r.total_tokens)+'</td><td class="num">'+fmtInt(r.latency_ms||0)+' ms</td><td>'+fail+'</td></tr>';
+      }).join("");
+    }
+  }
+  if(meta){
+    const last=recs.length?recs[0].timestamp:"";
+    meta.textContent="显示 "+recs.length+" 条 · 范围请求 "+fmtInt(hdrReq)+" · 失败 "+fmtInt(hdrFail)+(last?(" · 最近请求 "+fmtDT(last)):"");
+  }
+}
+function renderUsageError(message){
+  const tbody=document.getElementById("usageBody");
+  if(tbody)tbody.innerHTML='<tr><td colspan="8"><div class="usage-loading">无法加载使用日志：'+esc(message)+'</div></td></tr>';
+}
+async function loadUsage(){
+  if(usageLoading)return;
+  usageLoading=true;
+  const pr=usagePresetRange();
+  const q="?limit=100"+qp("auth_index",usageParams.account)+qp("from",pr.from)+qp("to",pr.to);
+  try{
+    const d=await api("/usage"+q);
+    if(d.error)throw new Error(d.error);
+    renderUsageData(d);
+  }catch(e){
+    renderUsageError(e.message||String(e));
+  }finally{
+    usageLoading=false;
+  }
+}
+function initUsage(){
+  renderUsageAccounts();
+  loadUsage();
+  if(usageTimer)clearInterval(usageTimer);
+  usageTimer=setInterval(()=>{if(!document.hidden)loadUsage()},10000);
 }
 
 (function init(){

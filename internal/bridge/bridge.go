@@ -319,6 +319,9 @@ type CallOpts struct {
 	ReasoningEffort string
 	// ThinkingBudget 对应上游 parameters.reasoning_budget_tokens（思考 token 预算）。
 	ThinkingBudget int
+	// SkipModelMap 跳过 MapModel。插件显式配置的模型映射名称已经解析成
+	// 上游 model.key，不能再被内置/用户映射二次改写。
+	SkipModelMap bool
 }
 
 // validReasoningEfforts 是官方 CLI 接受的上游 reasoning_effort 取值。
@@ -404,7 +407,9 @@ func (b *Bridge) CallQoderWithOpts(ctx context.Context, agent string, messages [
 	// 将客户端模型名（claude-sonnet-4-6 等）映射成 Qoder 上游内部 model.key（auto/qmodel_38max/gmodel/dmodel 等）。
 	// 上游对未知 key 会走兜底返回内容，但不会把这次调用计入 quota，这是「请求成功但 dashboard 无用量」的根因。
 	originalModel := model
-	model = MapModel(agent, model)
+	if !opts.SkipModelMap {
+		model = MapModel(agent, model)
+	}
 	if model != originalModel {
 		logger.Debug("mapModel %s/%s -> %s", agent, originalModel, model)
 	}

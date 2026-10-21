@@ -109,12 +109,31 @@ func buildQoderRequest(raw []byte, modelOverride string, wantStream bool) (*qode
 		return nil, fmt.Errorf("decode request: %w", err)
 	}
 	clientModel := bridge.StrValDefault(oreq, "model", "auto")
-	model := firstNonEmpty(strings.TrimSpace(modelOverride), clientModel)
+	requestedModel := firstNonEmpty(strings.TrimSpace(modelOverride), clientModel)
+	model := requestedModel
+	agent := bridge.InferAgent(clientModel)
+	skipModelMap := false
+	// Plugin-level model aliases are authoritative: resolve them directly to the
+	// upstream model.key and skip bridge.MapModel so user/default mappings cannot
+	// rewrite an explicit alias. If the host already resolved the alias to the
+	// upstream key, still infer the agent from the upstream key.
+	if upstream, ok := resolveModelAlias(requestedModel); ok {
+		model = upstream
+		agent = bridge.InferAgent(upstream)
+		skipModelMap = true
+	} else if upstream, ok := resolveModelAlias(clientModel); ok {
+		override := strings.TrimSpace(modelOverride)
+		if override == "" || strings.EqualFold(override, upstream) || strings.EqualFold(override, clientModel) {
+			model = upstream
+			agent = bridge.InferAgent(upstream)
+			skipModelMap = true
+		}
+	}
 	incoming, _ := oreq["messages"].([]interface{})
 	tools := oreq["tools"]
 	toolsOn := tools != nil
 
-	opts := bridge.CallOpts{}
+	opts := bridge.CallOpts{SkipModelMap: skipModelMap}
 	if mt, ok := oreq["max_tokens"].(float64); ok && int(mt) > 0 {
 		opts.MaxTokens = int(mt)
 	}
@@ -139,7 +158,7 @@ func buildQoderRequest(raw []byte, modelOverride string, wantStream bool) (*qode
 		body:        oreq,
 		model:       model,
 		clientModel: clientModel,
-		agent:       bridge.InferAgent(clientModel),
+		agent:       agent,
 		messages:    messages,
 		tools:       tools,
 		toolsOn:     toolsOn,

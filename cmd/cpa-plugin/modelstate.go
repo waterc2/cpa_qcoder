@@ -21,6 +21,9 @@ import (
 // newly discovered upstream models stay visible without an extra opt-in step.
 type modelSelection struct {
 	Disabled []string `json:"disabled"`
+	// Aliases maps an upstream model key to the name exposed to CPA clients.
+	// The original key is used when an entry is absent/empty.
+	Aliases map[string]string `json:"aliases,omitempty"`
 }
 
 var (
@@ -78,6 +81,88 @@ func applyModelSelection(models []pluginapi.ModelInfo) []pluginapi.ModelInfo {
 			continue
 		}
 		out = append(out, m)
+	}
+	return out
+}
+
+// modelAliasSnapshot returns a copy of the configured alias map.
+func modelAliasSnapshot() map[string]string {
+	modelSelMu.Lock()
+	defer modelSelMu.Unlock()
+	s := loadModelSelectionLocked()
+	if len(s.Aliases) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(s.Aliases))
+	for id, alias := range s.Aliases {
+		if alias != "" {
+			out[id] = alias
+		}
+	}
+	return out
+}
+
+// modelAliasFor returns the exposed name for an upstream model id (the id
+// itself when no alias is configured).
+func modelAliasFor(id string) string {
+	aliases := modelAliasSnapshot()
+	if len(aliases) == 0 {
+		return id
+	}
+	if alias, ok := aliases[id]; ok && alias != "" {
+		return alias
+	}
+	for key, alias := range aliases {
+		if strings.EqualFold(key, id) && alias != "" {
+			return alias
+		}
+	}
+	return id
+}
+
+// resolveModelAlias maps a client-facing alias back to the upstream model key.
+// The bool is false when the name is not a configured alias.
+func resolveModelAlias(name string) (string, bool) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "", false
+	}
+	aliases := modelAliasSnapshot()
+	for id, alias := range aliases {
+		if alias != "" && strings.EqualFold(alias, name) {
+			return id, true
+		}
+	}
+	return "", false
+}
+
+// applyModelAliases rewrites the exposed model ID/name after the denylist has
+// been applied. Filtering must always happen against the original upstream ID.
+func applyModelAliases(models []pluginapi.ModelInfo) []pluginapi.ModelInfo {
+	aliases := modelAliasSnapshot()
+	if len(aliases) == 0 {
+		return models
+	}
+	out := make([]pluginapi.ModelInfo, len(models))
+	copy(out, models)
+	for i := range out {
+		alias := ""
+		if a, ok := aliases[out[i].ID]; ok {
+			alias = a
+		} else {
+			for key, a := range aliases {
+				if strings.EqualFold(key, out[i].ID) {
+					alias = a
+					break
+				}
+			}
+		}
+		if alias == "" || strings.EqualFold(alias, out[i].ID) {
+			continue
+		}
+		out[i].ID = alias
+		out[i].Name = alias
+		out[i].DisplayName = alias
 	}
 	return out
 }
@@ -145,13 +230,17 @@ type catalogModel struct {
 // modelConfigView is the payload for GET/POST /models/config: the full catalog
 // with an enabled flag per model, plus the raw disabled list.
 func modelConfigView() map[string]any {
-	models := modelCatalogForUI()
+	return modelConfigViewFor(modelCatalogForUI())
+}
+
+func modelConfigViewFor(models []catalogModel) map[string]any {
 	disabled := modelDisabledSet()
 	list := make([]map[string]any, 0, len(models))
 	for _, m := range models {
 		list = append(list, map[string]any{
 			"id":           m.Info.ID,
 			"name":         firstNonEmpty(m.Info.DisplayName, m.Info.ID),
+			"alias":        modelAliasFor(m.Info.ID),
 			"context":      m.Info.ContextLength,
 			"enabled":      !disabled[strings.ToLower(m.Info.ID)],
 			"reasoning":    m.Reasoning,
@@ -168,14 +257,28 @@ func modelConfigView() map[string]any {
 
 func handleModelConfigUpdate(req pluginapi.ManagementRequest) map[string]any {
 	var body struct {
-		Disabled []string `json:"disabled"`
+		Disabled []string          `json:"disabled"`
+		Aliases  map[string]string `json:"aliases"`
 	}
 	if err := json.Unmarshal(req.Body, &body); err != nil {
 		return map[string]any{"error": "invalid body: " + err.Error()}
 	}
+	modelSelMu.Lock()
+	existing := loadModelSelectionLocked()
+	existingDisabled := append([]string(nil), existing.Disabled...)
+	existingAliases := map[string]string{}
+	for id, alias := range existing.Aliases {
+		existingAliases[id] = alias
+	}
+	modelSelMu.Unlock()
+
+	disabled := body.Disabled
+	if disabled == nil {
+		disabled = existingDisabled
+	}
 	seen := map[string]bool{}
-	out := make([]string, 0, len(body.Disabled))
-	for _, id := range body.Disabled {
+	out := make([]string, 0, len(disabled))
+	for _, id := range disabled {
 		id = strings.TrimSpace(id)
 		if id == "" || seen[strings.ToLower(id)] {
 			continue
@@ -183,13 +286,70 @@ func handleModelConfigUpdate(req pluginapi.ManagementRequest) map[string]any {
 		seen[strings.ToLower(id)] = true
 		out = append(out, id)
 	}
-	if err := saveModelSelection(&modelSelection{Disabled: out}); err != nil {
+
+	aliases := existingAliases
+	var catalog []catalogModel
+	if body.Aliases != nil {
+		catalog = modelCatalogForUI()
+		cleaned, err := normalizeModelAliases(catalog, body.Aliases)
+		if err != nil {
+			return map[string]any{"error": err.Error()}
+		}
+		aliases = cleaned
+	}
+	if err := saveModelSelection(&modelSelection{Disabled: out, Aliases: aliases}); err != nil {
 		return map[string]any{"error": err.Error()}
 	}
 	// Ask the host to re-register models so the change is reflected in
 	// /v1/models without a CPA restart (best effort; executor enforces anyway).
 	refreshHostAuthFiles()
+	if catalog != nil {
+		return modelConfigViewFor(catalog)
+	}
 	return modelConfigView()
+}
+
+// normalizeModelAliases validates the UI-supplied alias map against the current
+// catalog and returns only non-default entries keyed by canonical model id.
+func normalizeModelAliases(catalog []catalogModel, requested map[string]string) (map[string]string, error) {
+	canonical := make(map[string]string, len(catalog))
+	for _, m := range catalog {
+		canonical[strings.ToLower(m.Info.ID)] = m.Info.ID
+	}
+	cleaned := make(map[string]string, len(requested))
+	for rawID, rawAlias := range requested {
+		id := strings.TrimSpace(rawID)
+		alias := strings.TrimSpace(rawAlias)
+		if id == "" {
+			continue
+		}
+		canonicalID, ok := canonical[strings.ToLower(id)]
+		if !ok {
+			continue // model no longer in the catalog
+		}
+		if alias == "" || strings.EqualFold(alias, canonicalID) {
+			continue
+		}
+		if strings.ContainsAny(alias, " \t\r\n") {
+			return nil, fmt.Errorf("模型 %s 的映射名称不能包含空白字符", canonicalID)
+		}
+		cleaned[canonicalID] = alias
+	}
+	// Exposed names (aliases plus untouched original ids) must be unique.
+	seen := make(map[string]string, len(catalog))
+	for _, m := range catalog {
+		id := m.Info.ID
+		exposed := id
+		if alias := cleaned[id]; alias != "" {
+			exposed = alias
+		}
+		key := strings.ToLower(exposed)
+		if prev, ok := seen[key]; ok && !strings.EqualFold(prev, id) {
+			return nil, fmt.Errorf("映射名称 %s 与模型 %s 冲突", exposed, prev)
+		}
+		seen[key] = id
+	}
+	return cleaned, nil
 }
 
 // modelCatalogForUI merges every account's live upstream list with the static

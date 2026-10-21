@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
@@ -406,5 +407,207 @@ func TestParseSecretTokens(t *testing.T) {
 				t.Fatalf("parseSecretTokens(%q) = (%q, %q), want (%q, %q)", tc.secret, dev, ref, tc.wantDev, tc.wantRef)
 			}
 		})
+	}
+}
+
+func resetModelSelectionForTest(t *testing.T) {
+	t.Helper()
+	modelSelMu.Lock()
+	modelSelData = nil
+	modelSelMu.Unlock()
+	t.Cleanup(func() {
+		modelSelMu.Lock()
+		modelSelData = nil
+		modelSelMu.Unlock()
+	})
+}
+
+func TestModelAliasPersistenceAndView(t *testing.T) {
+	account.SetDataRoot(t.TempDir())
+	resetModelSelectionForTest(t)
+
+	if err := saveModelSelection(&modelSelection{Aliases: map[string]string{"gmodel": "my-glm"}}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if got := modelAliasFor("gmodel"); got != "my-glm" {
+		t.Fatalf("modelAliasFor(gmodel) = %q", got)
+	}
+	if upstream, ok := resolveModelAlias("my-glm"); !ok || upstream != "gmodel" {
+		t.Fatalf("resolveModelAlias(my-glm) = (%q, %v)", upstream, ok)
+	}
+
+	models := applyModelAliases(staticModelsRaw())
+	found := false
+	for _, m := range models {
+		if m.ID == "my-glm" {
+			found = true
+			if m.Name != "my-glm" || m.DisplayName != "my-glm" {
+				t.Fatalf("alias metadata not applied: %+v", m)
+			}
+		}
+		if m.ID == "gmodel" {
+			t.Fatalf("original id leaked after alias: %+v", m)
+		}
+	}
+	if !found {
+		t.Fatal("aliased model missing from exposed list")
+	}
+}
+
+func TestModelConfigUpdateAliases(t *testing.T) {
+	account.SetDataRoot(t.TempDir())
+	resetModelSelectionForTest(t)
+
+	body, _ := json.Marshal(map[string]any{
+		"aliases": map[string]string{"gmodel": "my-glm"},
+	})
+	out := handleModelConfigUpdate(pluginapi.ManagementRequest{Body: body})
+	if err, ok := out["error"]; ok {
+		t.Fatalf("update error: %v", err)
+	}
+	if got := modelAliasFor("gmodel"); got != "my-glm" {
+		t.Fatalf("alias not saved: %q", got)
+	}
+	models, _ := out["models"].([]map[string]any)
+	for _, m := range models {
+		if m["id"] == "gmodel" && m["alias"] != "my-glm" {
+			t.Fatalf("view alias = %v", m["alias"])
+		}
+	}
+
+	// An alias must not collide with another model's exposed name.
+	bad, _ := json.Marshal(map[string]any{
+		"aliases": map[string]string{"gmodel": "auto"},
+	})
+	if out := handleModelConfigUpdate(pluginapi.ManagementRequest{Body: bad}); out["error"] == nil {
+		t.Fatal("expected alias collision error")
+	}
+}
+
+func TestBuildQoderRequestPluginAlias(t *testing.T) {
+	account.SetDataRoot(t.TempDir())
+	resetModelSelectionForTest(t)
+	if err := saveModelSelection(&modelSelection{Aliases: map[string]string{"gmodel": "my-glm"}}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	body := []byte(`{"model":"my-glm","messages":[{"role":"user","content":"hi"}]}`)
+	qr, err := buildQoderRequest(body, "my-glm", false)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if qr.model != "gmodel" || qr.clientModel != "my-glm" {
+		t.Fatalf("alias routing = model %q client %q", qr.model, qr.clientModel)
+	}
+	if !qr.opts.SkipModelMap {
+		t.Fatal("explicit alias must skip bridge.MapModel")
+	}
+
+	// Host may resolve the plugin alias before invoking the executor.
+	qr2, err := buildQoderRequest(body, "gmodel", false)
+	if err != nil {
+		t.Fatalf("build resolved: %v", err)
+	}
+	if qr2.model != "gmodel" || !qr2.opts.SkipModelMap {
+		t.Fatalf("resolved alias = model %q skip %v", qr2.model, qr2.opts.SkipModelMap)
+	}
+}
+
+func resetUsageStoreForTest(t *testing.T) {
+	t.Helper()
+	usageStore = &requestUsageStore{perDay: map[string]map[string]*usageDayAgg{}}
+	usageMetaCache = &usageMetaResolver{}
+	t.Cleanup(func() {
+		usageStore = &requestUsageStore{perDay: map[string]map[string]*usageDayAgg{}}
+		usageMetaCache = &usageMetaResolver{}
+	})
+}
+
+func TestUsagePluginRecordsAndQueries(t *testing.T) {
+	account.SetDataRoot(t.TempDir())
+	resetUsageStoreForTest(t)
+
+	rec := pluginapi.UsageRecord{
+		Provider:    providerName,
+		Model:       "gmodel",
+		Alias:       "my-glm",
+		AuthIndex:   "auth-1",
+		AuthID:      "qoder-u1",
+		RequestedAt: time.Now().Add(-2 * time.Second),
+		Latency:     1500 * time.Millisecond,
+		Detail: pluginapi.UsageDetail{
+			InputTokens:  12,
+			OutputTokens: 34,
+			TotalTokens:  46,
+		},
+	}
+	raw, _ := json.Marshal(rec)
+	if _, err := handleUsage(raw); err != nil {
+		t.Fatalf("handleUsage: %v", err)
+	}
+
+	out := handleUsageQuery(pluginapi.ManagementRequest{Query: map[string][]string{"limit": {"10"}}})
+	records, _ := out["records"].([]requestUsageRecord)
+	if len(records) != 1 {
+		t.Fatalf("records = %d, want 1", len(records))
+	}
+	got := records[0]
+	if got.Model != "gmodel" || got.Alias != "my-glm" || got.AuthIndex != "auth-1" {
+		t.Fatalf("record = %+v", got)
+	}
+	if got.InputTokens != 12 || got.OutputTokens != 34 || got.TotalTokens != 46 || got.LatencyMS != 1500 {
+		t.Fatalf("tokens/latency = %+v", got)
+	}
+	totals, _ := out["totals"].(map[string]any)
+	if totals["today_requests"] != int64(1) || totals["total_requests"] != int64(1) {
+		t.Fatalf("totals = %+v", totals)
+	}
+
+	// A failed record is retained and counted.
+	failRec := pluginapi.UsageRecord{
+		Provider:    providerName,
+		Model:       "auto",
+		AuthIndex:   "auth-2",
+		RequestedAt: time.Now(),
+		Failed:      true,
+		Failure:     pluginapi.UsageFailure{StatusCode: 502, Body: "upstream unavailable"},
+	}
+	failRaw, _ := json.Marshal(failRec)
+	if _, err := handleUsage(failRaw); err != nil {
+		t.Fatalf("handleUsage failed record: %v", err)
+	}
+	out = handleUsageQuery(pluginapi.ManagementRequest{Query: map[string][]string{"limit": {"10"}}})
+	records, _ = out["records"].([]requestUsageRecord)
+	if len(records) != 2 || !records[0].Failed || records[0].StatusCode != 502 {
+		t.Fatalf("failed record = %+v", records)
+	}
+}
+
+func TestUsageStorePersistsAcrossReload(t *testing.T) {
+	account.SetDataRoot(t.TempDir())
+	resetUsageStoreForTest(t)
+
+	rec := pluginapi.UsageRecord{
+		Provider:    providerName,
+		Model:       "auto",
+		AuthIndex:   "auth-persist",
+		RequestedAt: time.Now(),
+		Detail:      pluginapi.UsageDetail{InputTokens: 5, OutputTokens: 6, TotalTokens: 11},
+	}
+	raw, _ := json.Marshal(rec)
+	if _, err := handleUsage(raw); err != nil {
+		t.Fatalf("handleUsage: %v", err)
+	}
+	path := usageStore.path
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("usage file not written: %v", err)
+	}
+
+	// Simulate a plugin restart: new store, same data dir.
+	usageStore = &requestUsageStore{perDay: map[string]map[string]*usageDayAgg{}}
+	out := handleUsageQuery(pluginapi.ManagementRequest{Query: map[string][]string{"limit": {"10"}}})
+	records, _ := out["records"].([]requestUsageRecord)
+	if len(records) != 1 || records[0].TotalTokens != 11 {
+		t.Fatalf("reloaded records = %+v", records)
 	}
 }

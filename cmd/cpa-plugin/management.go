@@ -71,8 +71,9 @@ func managementRegistration() managementRegistrationResponse {
 			{Method: http.MethodPost, Path: base + "/accounts/delete", Description: "Delete one Qoder account (account_id/auth_index)."},
 			{Method: http.MethodGet, Path: base + "/checkin/config", Description: "Get auto check-in configuration."},
 			{Method: http.MethodPost, Path: base + "/checkin/config", Description: "Update auto check-in configuration."},
-			{Method: http.MethodGet, Path: base + "/models/config", Description: "List selectable models and which are exposed."},
-			{Method: http.MethodPost, Path: base + "/models/config", Description: "Save model selection (body: {disabled: [modelId,...]})."},
+			{Method: http.MethodGet, Path: base + "/models/config", Description: "List selectable models, exposure flags and mapping names."},
+			{Method: http.MethodPost, Path: base + "/models/config", Description: "Save model selection and aliases (body: {disabled: [...], aliases: {modelId: alias}})."},
+			{Method: http.MethodGet, Path: base + "/usage", Description: "Per-request Qoder usage log. Query: auth_index, limit (default 100), from, to."},
 		},
 		Resources: []resourceRoute{
 			{Path: "/panel", Menu: "Qoder", Description: "Qoder account and check-in dashboard."},
@@ -114,7 +115,14 @@ func handleManagement(raw []byte) ([]byte, error) {
 	case req.Method == http.MethodGet && path == base+"/models/config":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, modelConfigView()))
 	case req.Method == http.MethodPost && path == base+"/models/config":
-		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleModelConfigUpdate(req)))
+		out := handleModelConfigUpdate(req)
+		status := http.StatusOK
+		if out["error"] != nil {
+			status = http.StatusBadRequest
+		}
+		return okEnvelope(mgmtJSONResponse(status, out))
+	case req.Method == http.MethodGet && path == base+"/usage":
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleUsageQuery(req)))
 	}
 	return okEnvelope(mgmtJSONResponse(http.StatusNotFound, map[string]any{"error": "not found: " + path}))
 }

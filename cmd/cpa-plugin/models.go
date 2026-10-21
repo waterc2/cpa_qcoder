@@ -48,9 +48,10 @@ func staticModelsRaw() []pluginapi.ModelInfo {
 	return out
 }
 
-// staticModels is the fallback catalog with the user's model selection applied.
+// staticModels is the fallback catalog with the user's model selection and
+// exposed alias names applied.
 func staticModels() []pluginapi.ModelInfo {
-	return applyModelSelection(staticModelsRaw())
+	return applyModelAliases(applyModelSelection(staticModelsRaw()))
 }
 
 func modelInfoFor(m bridge.QoderModel) pluginapi.ModelInfo {
@@ -104,19 +105,18 @@ func handleModelForAuth(raw []byte) ([]byte, error) {
 	models := staticModels()
 	if b, err := bridgeForAuth(sa); err == nil {
 		if list, err := b.ListAvailableModels(); err == nil && len(list) > 0 {
-			models = make([]pluginapi.ModelInfo, 0, len(list))
+			live := make([]pluginapi.ModelInfo, 0, len(list))
 			for _, m := range list {
 				if !m.Enable {
 					continue
 				}
-				models = append(models, modelInfoFor(m))
+				live = append(live, modelInfoFor(m))
 			}
-			if len(models) == 0 {
-				models = staticModels()
+			if len(live) > 0 {
+				models = applyModelAliases(applyModelSelection(live))
 			}
 		}
 	}
-	models = applyModelSelection(models)
 	models = filterExcludedModels(models, req.Host)
 	return okEnvelope(pluginapi.ModelResponse{Provider: providerName, Models: models})
 }
