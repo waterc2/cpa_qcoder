@@ -75,6 +75,9 @@ func TestRegistration(t *testing.T) {
 	if !reg.Capabilities.Executor || !reg.Capabilities.AuthProvider || !reg.Capabilities.ModelProvider {
 		t.Fatalf("capabilities = %+v", reg.Capabilities)
 	}
+	if !reg.Capabilities.Scheduler || !reg.Capabilities.RequestInterceptor || !reg.Capabilities.RequestLifecyclePlugin {
+		t.Fatalf("scheduler/interceptor capabilities = %+v", reg.Capabilities)
+	}
 	if len(reg.Capabilities.ExecutorInputFormats) == 0 {
 		t.Fatal("no input formats")
 	}

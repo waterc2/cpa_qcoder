@@ -14,10 +14,11 @@ import (
 // so panel changes survive a CPA restart. It lives in the plugin data dir next
 // to models.json and checkin_history.json.
 type persistedConfig struct {
-	CheckinAuto    *bool    `json:"checkin_auto,omitempty"`
-	CheckinTimes   []string `json:"checkin_times,omitempty"`
-	CheckinOnStart *bool    `json:"checkin_on_start,omitempty"`
-	DefaultRegion  string   `json:"default_region,omitempty"`
+	CheckinAuto          *bool    `json:"checkin_auto,omitempty"`
+	CheckinTimes         []string `json:"checkin_times,omitempty"`
+	CheckinOnStart       *bool    `json:"checkin_on_start,omitempty"`
+	DefaultRegion        string   `json:"default_region,omitempty"`
+	MaxConcurrentPerAuth *int     `json:"max_concurrency,omitempty"`
 }
 
 func persistedConfigPath() string {
@@ -47,17 +48,22 @@ func loadPersistedConfig() {
 	if pc.DefaultRegion != "" {
 		activeConfig.DefaultRegion = pc.DefaultRegion
 	}
+	if pc.MaxConcurrentPerAuth != nil && *pc.MaxConcurrentPerAuth > 0 {
+		activeConfig.MaxConcurrentPerAuth = *pc.MaxConcurrentPerAuth
+	}
 	configMu.Unlock()
+	qoderScheduler.setMax(currentConfig().MaxConcurrentPerAuth)
 }
 
 // savePersistedConfig writes the current panel-owned config to disk.
 func savePersistedConfig() {
 	configMu.RLock()
 	pc := persistedConfig{
-		CheckinAuto:    boolPtr(activeConfig.AutoCheckin),
-		CheckinTimes:   append([]string(nil), activeConfig.CheckinTimes...),
-		CheckinOnStart: boolPtr(activeConfig.CheckinOnStart),
-		DefaultRegion:  activeConfig.DefaultRegion,
+		CheckinAuto:          boolPtr(activeConfig.AutoCheckin),
+		CheckinTimes:         append([]string(nil), activeConfig.CheckinTimes...),
+		CheckinOnStart:       boolPtr(activeConfig.CheckinOnStart),
+		DefaultRegion:        activeConfig.DefaultRegion,
+		MaxConcurrentPerAuth: intPtr(activeConfig.MaxConcurrentPerAuth),
 	}
 	configMu.RUnlock()
 
@@ -71,3 +77,5 @@ func savePersistedConfig() {
 }
 
 func boolPtr(b bool) *bool { return &b }
+
+func intPtr(n int) *int { return &n }

@@ -74,6 +74,7 @@ func managementRegistration() managementRegistrationResponse {
 			{Method: http.MethodGet, Path: base + "/models/config", Description: "List selectable models, exposure flags and mapping names."},
 			{Method: http.MethodPost, Path: base + "/models/config", Description: "Save model selection and aliases (body: {disabled: [...], aliases: {modelId: alias}})."},
 			{Method: http.MethodGet, Path: base + "/usage", Description: "Per-request Qoder usage log. Query: auth_index, limit (default 100), from, to."},
+			{Method: http.MethodGet, Path: base + "/scheduler", Description: "Show per-account in-flight request counts and the concurrency limit."},
 		},
 		Resources: []resourceRoute{
 			{Path: "/panel", Menu: "Qoder", Description: "Qoder account and check-in dashboard."},
@@ -123,6 +124,8 @@ func handleManagement(raw []byte) ([]byte, error) {
 		return okEnvelope(mgmtJSONResponse(status, out))
 	case req.Method == http.MethodGet && path == base+"/usage":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleUsageQuery(req)))
+	case req.Method == http.MethodGet && path == base+"/scheduler":
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleSchedulerStatus()))
 	}
 	return okEnvelope(mgmtJSONResponse(http.StatusNotFound, map[string]any{"error": "not found: " + path}))
 }
@@ -512,6 +515,7 @@ func configView() map[string]any {
 		"checkin_times":    cfg.CheckinTimes,
 		"checkin_on_start": cfg.CheckinOnStart,
 		"default_region":   cfg.DefaultRegion,
+		"max_concurrency":  cfg.MaxConcurrentPerAuth,
 	}
 }
 
@@ -521,6 +525,7 @@ func handleConfigUpdate(req pluginapi.ManagementRequest) map[string]any {
 		CheckinTimes   []string `json:"checkin_times"`
 		CheckinOnStart *bool    `json:"checkin_on_start"`
 		DefaultRegion  string   `json:"default_region"`
+		MaxConcurrent  *int     `json:"max_concurrency"`
 	}
 	if err := json.Unmarshal(req.Body, &body); err != nil {
 		return map[string]any{"error": "invalid body: " + err.Error()}
@@ -538,8 +543,16 @@ func handleConfigUpdate(req pluginapi.ManagementRequest) map[string]any {
 	if r := strings.TrimSpace(body.DefaultRegion); r != "" {
 		activeConfig.DefaultRegion = r
 	}
+	if body.MaxConcurrent != nil && *body.MaxConcurrent > 0 {
+		n := *body.MaxConcurrent
+		if n > maxConcurrentPerAuthLimit {
+			n = maxConcurrentPerAuthLimit
+		}
+		activeConfig.MaxConcurrentPerAuth = n
+	}
 	configMu.Unlock()
 	savePersistedConfig()
+	qoderScheduler.setMax(currentConfig().MaxConcurrentPerAuth)
 	return configView()
 }
 

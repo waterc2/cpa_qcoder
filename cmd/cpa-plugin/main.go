@@ -96,13 +96,17 @@ type pluginConfig struct {
 	CheckinTimes   []string
 	CheckinOnStart bool
 	DefaultRegion  string
+	// MaxConcurrentPerAuth caps in-flight requests per Qoder account. The
+	// scheduler spreads requests across accounts above this limit.
+	MaxConcurrentPerAuth int
 }
 
 var (
 	configMu     sync.RWMutex
 	activeConfig = pluginConfig{
-		CheckinTimes:  []string{"10:00"},
-		DefaultRegion: "global",
+		CheckinTimes:         []string{"10:00"},
+		DefaultRegion:        "global",
+		MaxConcurrentPerAuth: defaultMaxConcurrentPerAuth,
 	}
 )
 
@@ -229,6 +233,14 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 		return handlePollLogin(request)
 	case pluginabi.MethodAuthRefresh:
 		return handleRefreshAuth(request)
+	case pluginabi.MethodSchedulerPick:
+		return handleSchedulerPick(request)
+	case pluginabi.MethodRequestInterceptBefore:
+		return handleRequestInterceptBefore(request)
+	case pluginabi.MethodRequestInterceptAfter:
+		return handleRequestInterceptAfter(request)
+	case pluginabi.MethodRequestComplete:
+		return handleRequestComplete(request)
 	case pluginabi.MethodExecutorIdentifier:
 		return okEnvelope(identifierResponse{Identifier: providerName})
 	case pluginabi.MethodExecutorExecute:
@@ -280,14 +292,18 @@ type registration struct {
 }
 
 type registrationCapability struct {
-	ModelProvider         bool                         `json:"model_provider"`
-	AuthProvider          bool                         `json:"auth_provider"`
-	Executor              bool                         `json:"executor"`
-	ExecutorModelScope    pluginapi.ExecutorModelScope `json:"executor_model_scope"`
-	ExecutorInputFormats  []string                     `json:"executor_input_formats,omitempty"`
-	ExecutorOutputFormats []string                     `json:"executor_output_formats,omitempty"`
-	ManagementAPI         bool                         `json:"management_api"`
-	UsagePlugin           bool                         `json:"usage_plugin"`
+	ModelProvider             bool                         `json:"model_provider"`
+	AuthProvider              bool                         `json:"auth_provider"`
+	Scheduler                 bool                         `json:"scheduler"`
+	SchedulerAcrossPriorities bool                         `json:"scheduler_across_priorities,omitempty"`
+	RequestInterceptor        bool                         `json:"request_interceptor"`
+	RequestLifecyclePlugin    bool                         `json:"request_lifecycle_plugin"`
+	Executor                  bool                         `json:"executor"`
+	ExecutorModelScope        pluginapi.ExecutorModelScope `json:"executor_model_scope"`
+	ExecutorInputFormats      []string                     `json:"executor_input_formats,omitempty"`
+	ExecutorOutputFormats     []string                     `json:"executor_output_formats,omitempty"`
+	ManagementAPI             bool                         `json:"management_api"`
+	UsagePlugin               bool                         `json:"usage_plugin"`
 }
 
 type streamResponse struct {
@@ -309,17 +325,22 @@ func pluginRegistration() registration {
 				{Name: "checkin_times", Type: pluginapi.ConfigFieldTypeArray, Description: "Daily auto check-in times, HH:MM list (default [\"10:00\"])."},
 				{Name: "checkin_on_start", Type: pluginapi.ConfigFieldTypeBoolean, Default: false, Description: "Run a full check-in once when the plugin loads."},
 				{Name: "default_region", Type: pluginapi.ConfigFieldTypeEnum, Default: "global", EnumValues: []string{"global", "cn"}, Description: "Region used when a credential does not specify one."},
+				{Name: "max_concurrency", Type: pluginapi.ConfigFieldTypeInteger, Default: defaultMaxConcurrentPerAuth, Description: "Maximum concurrent in-flight requests per Qoder account (default 4)."},
 			},
 		},
 		Capabilities: registrationCapability{
-			ModelProvider:         true,
-			AuthProvider:          true,
-			Executor:              true,
-			ExecutorModelScope:    pluginapi.ExecutorModelScopeOAuth,
-			ExecutorInputFormats:  []string{"chat-completions"},
-			ExecutorOutputFormats: []string{"chat-completions"},
-			ManagementAPI:         true,
-			UsagePlugin:           true,
+			ModelProvider:             true,
+			AuthProvider:              true,
+			Scheduler:                 true,
+			SchedulerAcrossPriorities: true,
+			RequestInterceptor:        true,
+			RequestLifecyclePlugin:    true,
+			Executor:                  true,
+			ExecutorModelScope:        pluginapi.ExecutorModelScopeOAuth,
+			ExecutorInputFormats:      []string{"chat-completions"},
+			ExecutorOutputFormats:     []string{"chat-completions"},
+			ManagementAPI:             true,
+			UsagePlugin:               true,
 		},
 	}
 }
@@ -394,6 +415,17 @@ func configure(raw []byte) {
 		}
 		return list, true
 	}
+	getInt := func(key string) (int, bool) {
+		v, ok := fields[key]
+		if !ok {
+			return 0, false
+		}
+		var n int
+		if json.Unmarshal(v, &n) != nil {
+			return 0, false
+		}
+		return n, true
+	}
 
 	configMu.Lock()
 	if b, ok := getBool("checkin_auto"); ok {
@@ -408,11 +440,15 @@ func configure(raw []byte) {
 	if s, ok := getStr("default_region"); ok && s != "" {
 		activeConfig.DefaultRegion = s
 	}
+	if n, ok := getInt("max_concurrency"); ok && n > 0 {
+		activeConfig.MaxConcurrentPerAuth = n
+	}
 	configMu.Unlock()
 
 	// Values saved from the management panel override the host config so they
 	// survive a CPA restart.
 	loadPersistedConfig()
+	qoderScheduler.setMax(currentConfig().MaxConcurrentPerAuth)
 
 	if currentConfig().CheckinOnStart {
 		go runScheduledCheckin()
