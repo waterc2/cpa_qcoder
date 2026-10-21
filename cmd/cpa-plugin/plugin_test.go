@@ -538,6 +538,7 @@ func TestUsagePluginRecordsAndQueries(t *testing.T) {
 		Detail: pluginapi.UsageDetail{
 			InputTokens:  12,
 			OutputTokens: 34,
+			CachedTokens: 5,
 			TotalTokens:  46,
 		},
 	}
@@ -555,7 +556,7 @@ func TestUsagePluginRecordsAndQueries(t *testing.T) {
 	if got.Model != "gmodel" || got.Alias != "my-glm" || got.AuthIndex != "auth-1" {
 		t.Fatalf("record = %+v", got)
 	}
-	if got.InputTokens != 12 || got.OutputTokens != 34 || got.TotalTokens != 46 || got.LatencyMS != 1500 {
+	if got.InputTokens != 12 || got.OutputTokens != 34 || got.CachedTokens != 5 || got.TotalTokens != 46 || got.LatencyMS != 1500 {
 		t.Fatalf("tokens/latency = %+v", got)
 	}
 	totals, _ := out["totals"].(map[string]any)

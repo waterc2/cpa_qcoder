@@ -447,6 +447,10 @@ func buildUsageRecord(rec pluginapi.UsageRecord) requestUsageRecord {
 	if total == 0 {
 		total = rec.Detail.InputTokens + rec.Detail.OutputTokens + rec.Detail.ReasoningTokens
 	}
+	cached := rec.Detail.CachedTokens
+	if cached == 0 {
+		cached = rec.Detail.CacheReadTokens
+	}
 	errText := strings.TrimSpace(rec.Failure.Body)
 	if len(errText) > 512 {
 		errText = errText[:512]
@@ -463,7 +467,7 @@ func buildUsageRecord(rec pluginapi.UsageRecord) requestUsageRecord {
 		InputTokens:     rec.Detail.InputTokens,
 		OutputTokens:    rec.Detail.OutputTokens,
 		ReasoningTokens: rec.Detail.ReasoningTokens,
-		CachedTokens:    rec.Detail.CachedTokens,
+		CachedTokens:    cached,
 		TotalTokens:     total,
 		Failed:          rec.Failed,
 		StatusCode:      rec.Failure.StatusCode,

@@ -17,11 +17,12 @@ type Delta struct {
 	ToolCalls    []interface{}
 	InputTokens  int
 	OutputTokens int
+	CachedTokens int   // 输入缓存命中 token（prompt_tokens_details.cached_tokens 等）
 	Err          error // 上游返回业务错误时非 nil
 }
 
 func (d Delta) isEmpty() bool {
-	return d.Role == "" && d.Content == "" && d.Reasoning == "" && d.ToolCalls == nil && d.InputTokens == 0 && d.OutputTokens == 0 && d.Err == nil
+	return d.Role == "" && d.Content == "" && d.Reasoning == "" && d.ToolCalls == nil && d.InputTokens == 0 && d.OutputTokens == 0 && d.CachedTokens == 0 && d.Err == nil
 }
 
 func ExtractDelta(dataLine string) Delta {
@@ -55,10 +56,11 @@ func ExtractDelta(dataLine string) Delta {
 	}
 	// 先捕获顶层 usage（上游可能在最后一个 chunk 中与 choices 一起返回），
 	// 不提前 return：同帧若还带 choices 内容，合并进同一个 Delta，避免内容丢失
-	var usageIn, usageOut int
+	var usageIn, usageOut, usageCached int
 	if usage, ok := innerJSON["usage"].(map[string]interface{}); ok {
 		usageIn = int(cosy.FloatVal(usage, "prompt_tokens"))
 		usageOut = int(cosy.FloatVal(usage, "completion_tokens"))
+		usageCached = cachedTokensFromUsage(usage)
 	}
 	choices, _ := innerJSON["choices"].([]interface{})
 	for _, ch := range choices {
@@ -76,7 +78,7 @@ func ExtractDelta(dataLine string) Delta {
 		}
 		if role != "" || content != "" || reasoning != "" || toolCalls != nil {
 			return Delta{Role: role, Content: content, Reasoning: reasoning, ToolCalls: toolCalls,
-				InputTokens: usageIn, OutputTokens: usageOut}
+				InputTokens: usageIn, OutputTokens: usageOut, CachedTokens: usageCached}
 		}
 	}
 	// 上游业务错误：{"code":"115","message":"..."}
@@ -90,11 +92,41 @@ func ExtractDelta(dataLine string) Delta {
 		return Delta{Err: err}
 	}
 	// choices 与业务 code 均未命中且 usage > 0：维持返回 usage-only Delta（行为同修复前）
-	if usageIn > 0 || usageOut > 0 {
-		return Delta{InputTokens: usageIn, OutputTokens: usageOut}
+	if usageIn > 0 || usageOut > 0 || usageCached > 0 {
+		return Delta{InputTokens: usageIn, OutputTokens: usageOut, CachedTokens: usageCached}
 	}
 	logger.Debug("[delta] no valid choices found, inner=%s", inner)
 	return Delta{}
+}
+
+// cachedTokensFromUsage reads the common cached-input counters used by
+// OpenAI/Anthropic-compatible upstreams. Qoder's terminal usage frame may use
+// any of these shapes, so keep the lookup tolerant.
+func cachedTokensFromUsage(usage map[string]interface{}) int {
+	if usage == nil {
+		return 0
+	}
+	readInt := func(m map[string]interface{}, keys ...string) int {
+		for _, k := range keys {
+			if _, ok := m[k]; ok {
+				if n := int(cosy.FloatVal(m, k)); n > 0 {
+					return n
+				}
+			}
+		}
+		return 0
+	}
+	if n := readInt(usage, "cached_tokens", "cache_read_tokens", "cache_read_input_tokens", "prompt_cache_hit_tokens", "cached_input_tokens"); n > 0 {
+		return n
+	}
+	for _, key := range []string{"prompt_tokens_details", "input_tokens_details"} {
+		if details, ok := usage[key].(map[string]interface{}); ok {
+			if n := readInt(details, "cached_tokens", "cache_read_tokens", "cache_read_input_tokens"); n > 0 {
+				return n
+			}
+		}
+	}
+	return 0
 }
 
 func truncate(s string, max int) string {

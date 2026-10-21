@@ -152,7 +152,7 @@
       </div>
       <div style="overflow:auto">
         <table class="utbl">
-          <thead><tr><th>时间</th><th>账号</th><th>模型</th><th class="num">输入 Token</th><th class="num">输出 Token</th><th class="num">总 Token</th><th class="num">耗时</th><th>状态</th></tr></thead>
+          <thead><tr><th>时间</th><th>账号</th><th>模型</th><th class="num">输入 Token (缓存)</th><th class="num">输出 Token</th><th class="num">总 Token</th><th class="num">每秒输出 Token</th><th>状态</th></tr></thead>
           <tbody id="usageBody"><tr><td colspan="8"><div class="usage-loading">正在加载使用日志…</div></td></tr></tbody>
         </table>
       </div>
@@ -365,6 +365,7 @@ const usageParams={range:"today",account:"",from:"",to:""};
 let usageTimer=null, usageLoading=false;
 function fmtInt(n){const v=Number(n)||0;return v.toLocaleString("zh-CN")}
 function fmtTok(n){const v=Number(n)||0;return v>=1e6?(Math.round(v/1e4)/100)+"M":v>=1000?(Math.round(v/100)/10)+"K":""+v}
+function fmtRate(out,ms){const sec=(Number(ms)||0)/1000;if(!(sec>0))return "—";const v=(Number(out)||0)/sec;return (v>=100?Math.round(v):Math.round(v*10)/10)+" tok/s"}
 function fmtDT(s){try{const d=new Date(s);if(isNaN(d.getTime()))return s||"-";const p=n=>String(n).padStart(2,"0");return d.getFullYear()+"-"+p(d.getMonth()+1)+"-"+p(d.getDate())+" "+p(d.getHours())+":"+p(d.getMinutes())}catch(e){return s||"-"}}
 function fmtDay(d){const p=n=>String(n).padStart(2,"0");return d.getFullYear()+"-"+p(d.getMonth()+1)+"-"+p(d.getDate())}
 function usagePresetRange(){
@@ -433,7 +434,9 @@ function renderUsageData(d){
       tbody.innerHTML=recs.map(r=>{
         const fail=r.failed?('<span class="tag err" title="'+esc(r.error||"")+'">失败'+(r.status_code?(" "+r.status_code):"")+'</span>'):'<span class="tag ok">成功</span>';
         const model=esc(r.model||"-")+(r.alias&&r.alias!==r.model?(' <span class="muted">('+esc(r.alias)+')</span>'):"");
-        return '<tr><td>'+esc(fmtDT(r.timestamp))+'</td><td>'+esc(r.nickname||r.email||r.auth_index||"-")+'</td><td>'+model+'</td><td class="num">'+fmtTok(r.input_tokens)+'</td><td class="num">'+fmtTok(r.output_tokens)+'</td><td class="num">'+fmtTok(r.total_tokens)+'</td><td class="num">'+fmtInt(r.latency_ms||0)+' ms</td><td>'+fail+'</td></tr>';
+        const rate=(!r.failed&&r.output_tokens>0&&r.latency_ms>0)?fmtRate(r.output_tokens,r.latency_ms):"—";
+        const inputCell=fmtTok(r.input_tokens)+' <span class="muted" title="括号内为输入缓存命中 Token">('+fmtTok(r.cached_tokens||0)+')</span>';
+        return '<tr><td>'+esc(fmtDT(r.timestamp))+'</td><td>'+esc(r.nickname||r.email||r.auth_index||"-")+'</td><td>'+model+'</td><td class="num">'+inputCell+'</td><td class="num">'+fmtTok(r.output_tokens)+'</td><td class="num">'+fmtTok(r.total_tokens)+'</td><td class="num" title="耗时 '+fmtInt(r.latency_ms||0)+' ms">'+rate+'</td><td>'+fail+'</td></tr>';
       }).join("");
     }
   }

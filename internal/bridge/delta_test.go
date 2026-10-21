@@ -78,3 +78,22 @@ func TestExtractDeltaUsageOnlyFrame(t *testing.T) {
 		t.Fatalf("usage-only frame leaked content fields: %+v", d)
 	}
 }
+
+// TestExtractDeltaCachedTokens covers the cached-input counters used by the
+// usage panel: OpenAI nested details plus flat Anthropic/other aliases.
+func TestExtractDeltaCachedTokens(t *testing.T) {
+	cases := []string{
+		`{"choices":[],"usage":{"prompt_tokens":12,"completion_tokens":34,"prompt_tokens_details":{"cached_tokens":7}}}`,
+		`{"choices":[],"usage":{"prompt_tokens":12,"completion_tokens":34,"cached_tokens":7}}`,
+		`{"choices":[],"usage":{"prompt_tokens":12,"completion_tokens":34,"cache_read_input_tokens":7}}`,
+	}
+	for _, inner := range cases {
+		d := ExtractDelta(envelopePayload(200, inner))
+		if d.Err != nil {
+			t.Fatalf("err = %v", d.Err)
+		}
+		if d.InputTokens != 12 || d.OutputTokens != 34 || d.CachedTokens != 7 {
+			t.Fatalf("delta = %+v, want 12/34 cached=7 (inner=%s)", d, inner)
+		}
+	}
+}

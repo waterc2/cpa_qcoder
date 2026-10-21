@@ -206,15 +206,15 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 	var full strings.Builder
 	var reasoning strings.Builder
 	var toolCalls []interface{}
-	var inTok, outTok int
+	var inTok, outTok, cachedTok int
 	ctx, cancel := newExecContext()
 	defer cancel()
 	err = b.CallQoderWithOpts(ctx, qr.agent, qr.messages, qr.model, qr.tools, qr.opts, func(d bridge.Delta) {
 		if d.Err != nil {
 			return
 		}
-		if d.InputTokens > 0 || d.OutputTokens > 0 {
-			inTok, outTok = d.InputTokens, d.OutputTokens
+		if d.InputTokens > 0 || d.OutputTokens > 0 || d.CachedTokens > 0 {
+			inTok, outTok, cachedTok = d.InputTokens, d.OutputTokens, d.CachedTokens
 		}
 		if d.Content != "" {
 			full.WriteString(d.Content)
@@ -257,6 +257,7 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 		},
 		"usage": map[string]interface{}{
 			"prompt_tokens": inTok, "completion_tokens": outTok, "total_tokens": inTok + outTok,
+			"prompt_tokens_details": map[string]interface{}{"cached_tokens": cachedTok},
 		},
 	}
 	payload, _ := json.Marshal(resp)
@@ -325,14 +326,14 @@ func collectStream(ctx context.Context, b *bridge.Bridge, qr *qoderRequest, fram
 	created := cosy.UnixSec()
 	var chunks []pluginapi.ExecutorStreamChunk
 	var toolCallBuf []interface{}
-	var inTok, outTok int
+	var inTok, outTok, cachedTok int
 
 	err := b.CallQoderWithOpts(ctx, qr.agent, qr.messages, qr.model, qr.tools, qr.opts, func(d bridge.Delta) {
 		if d.Err != nil {
 			return
 		}
-		if d.InputTokens > 0 || d.OutputTokens > 0 {
-			inTok, outTok = d.InputTokens, d.OutputTokens
+		if d.InputTokens > 0 || d.OutputTokens > 0 || d.CachedTokens > 0 {
+			inTok, outTok, cachedTok = d.InputTokens, d.OutputTokens, d.CachedTokens
 		}
 		chunk := bridge.MakeChatChunk(reqID, created, qr.clientModel)
 		choices := chunk["choices"].([]interface{})
@@ -365,9 +366,10 @@ func collectStream(ctx context.Context, b *bridge.Bridge, qr *qoderRequest, fram
 	ch := done["choices"].([]interface{})[0].(map[string]interface{})
 	ch["finish_reason"] = finish
 	ch["delta"] = map[string]interface{}{}
-	if inTok > 0 || outTok > 0 {
+	if inTok > 0 || outTok > 0 || cachedTok > 0 {
 		done["usage"] = map[string]interface{}{
 			"prompt_tokens": inTok, "completion_tokens": outTok, "total_tokens": inTok + outTok,
+			"prompt_tokens_details": map[string]interface{}{"cached_tokens": cachedTok},
 		}
 	}
 	if data, err := json.Marshal(done); err == nil {
@@ -384,15 +386,15 @@ func pumpStream(ctx context.Context, cancel context.CancelFunc, streamID string,
 	reqID := "chatcmpl-" + cosy.NewRequestID()
 	created := cosy.UnixSec()
 	var toolCallBuf []interface{}
-	var inTok, outTok int
+	var inTok, outTok, cachedTok int
 	emitFailed := false
 
 	err := b.CallQoderWithOpts(ctx, qr.agent, qr.messages, qr.model, qr.tools, qr.opts, func(d bridge.Delta) {
 		if emitFailed || d.Err != nil {
 			return
 		}
-		if d.InputTokens > 0 || d.OutputTokens > 0 {
-			inTok, outTok = d.InputTokens, d.OutputTokens
+		if d.InputTokens > 0 || d.OutputTokens > 0 || d.CachedTokens > 0 {
+			inTok, outTok, cachedTok = d.InputTokens, d.OutputTokens, d.CachedTokens
 		}
 		chunk := bridge.MakeChatChunk(reqID, created, qr.clientModel)
 		choices := chunk["choices"].([]interface{})
@@ -437,9 +439,10 @@ func pumpStream(ctx context.Context, cancel context.CancelFunc, streamID string,
 	ch := done["choices"].([]interface{})[0].(map[string]interface{})
 	ch["finish_reason"] = finish
 	ch["delta"] = map[string]interface{}{}
-	if inTok > 0 || outTok > 0 {
+	if inTok > 0 || outTok > 0 || cachedTok > 0 {
 		done["usage"] = map[string]interface{}{
 			"prompt_tokens": inTok, "completion_tokens": outTok, "total_tokens": inTok + outTok,
+			"prompt_tokens_details": map[string]interface{}{"cached_tokens": cachedTok},
 		}
 	}
 	if data, err := json.Marshal(done); err == nil {
