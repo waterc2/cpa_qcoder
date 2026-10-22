@@ -178,6 +178,20 @@ func newExecContext() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), execTimeout)
 }
 
+// executorSessionKey extracts the same session identity the scheduler uses.
+// When the client does not provide one, a unique key keeps queue observations
+// paired with the completion callback instead of leaking into the TTL bucket.
+func executorSessionKey(req pluginapi.ExecutorRequest) string {
+	key := schedulerSessionKey(pluginapi.SchedulerOptions{
+		Headers:  req.Headers,
+		Metadata: req.Metadata,
+	})
+	if key != "" {
+		return key
+	}
+	return "request:" + cosy.NewUUID()
+}
+
 func handleExecExecute(raw []byte) ([]byte, error) {
 	var req pluginapi.ExecutorRequest
 	if err := json.Unmarshal(raw, &req); err != nil {
@@ -207,7 +221,9 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 	var reasoning strings.Builder
 	var toolCalls []interface{}
 	var inTok, outTok, cachedTok int
+	sessionKey := executorSessionKey(req)
 	ctx, cancel := newExecContext()
+	ctx = bridge.WithQueueContext(ctx, sessionKey, qr.clientModel)
 	defer cancel()
 	err = b.CallQoderWithOpts(ctx, qr.agent, qr.messages, qr.model, qr.tools, qr.opts, func(d bridge.Delta) {
 		if d.Err != nil {
@@ -226,6 +242,7 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 			toolCalls = append(toolCalls, d.ToolCalls...)
 		}
 	})
+	qoderQueueBreaker.recordDone([]string{qr.model, qr.clientModel}, sessionKey, err == nil)
 	if err != nil {
 		msg, et := bridge.FriendlyError(err)
 		if et == "" {
@@ -298,18 +315,22 @@ func handleExecStream(raw []byte) ([]byte, error) {
 	}
 	frame := clientNeedsSSEFrame(req.Metadata)
 	headers := streamHeaders()
+	sessionKey := executorSessionKey(req.ExecutorRequest)
 
 	// Async: emit chunks through the host stream and return immediately.
 	if req.StreamID != "" {
 		ctx, cancel := newExecContext()
-		go pumpStream(ctx, cancel, req.StreamID, b, qr, frame)
+		ctx = bridge.WithQueueContext(ctx, sessionKey, qr.clientModel)
+		go pumpStream(ctx, cancel, req.StreamID, b, qr, frame, sessionKey)
 		return okEnvelope(streamResponse{Headers: headers})
 	}
 
 	// Sync: collect all chunks and return them in one response.
 	ctx, cancel := newExecContext()
+	ctx = bridge.WithQueueContext(ctx, sessionKey, qr.clientModel)
 	defer cancel()
 	chunks, err := collectStream(ctx, b, qr, frame)
+	qoderQueueBreaker.recordDone([]string{qr.model, qr.clientModel}, sessionKey, err == nil)
 	if err != nil {
 		msg, et := bridge.FriendlyError(err)
 		if et == "" {
@@ -379,7 +400,7 @@ func collectStream(ctx context.Context, b *bridge.Bridge, qr *qoderRequest, fram
 }
 
 // pumpStream emits chunks to the host as they arrive, then closes the stream.
-func pumpStream(ctx context.Context, cancel context.CancelFunc, streamID string, b *bridge.Bridge, qr *qoderRequest, frame bool) {
+func pumpStream(ctx context.Context, cancel context.CancelFunc, streamID string, b *bridge.Bridge, qr *qoderRequest, frame bool, sessionKey string) {
 	defer cancel()
 	defer streamClose(streamID)
 
@@ -420,6 +441,7 @@ func pumpStream(ctx context.Context, cancel context.CancelFunc, streamID string,
 			cancel()
 		}
 	})
+	qoderQueueBreaker.recordDone([]string{qr.model, qr.clientModel}, sessionKey, err == nil && !emitFailed)
 	if err != nil {
 		if !emitFailed {
 			msg, _ := bridge.FriendlyError(err)

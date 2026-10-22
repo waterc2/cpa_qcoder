@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
+
+	"qoder2api/logger"
 )
 
 // These metadata keys are part of the host/plugin contract. They are kept as
@@ -206,10 +208,18 @@ func (s *qoderSchedulerState) releaseRequest(requestID string) {
 
 // pick returns (authID, handled). handled=false means "not a Qoder request" or
 // "no Qoder candidate", and lets the host fall back to its normal selector.
+//
+// Session-aware half-open behavior:
+//   - a session already bound to Qoder keeps using Qoder, even while the model
+//     queue is congested;
+//   - a new session is routed to the first non-Qoder candidate while the queue
+//     breaker is open;
+//   - if no non-Qoder candidate exists, Qoder remains the fallback.
 func (s *qoderSchedulerState) pick(req pluginapi.SchedulerPickRequest) (string, bool) {
 	if s == nil || !schedulerRequestIsQoder(req) {
 		return "", false
 	}
+	allCandidates := validSchedulerCandidates(req.Candidates)
 	candidates := qoderSchedulerCandidates(req.Candidates)
 	if len(candidates) == 0 {
 		return "", false
@@ -221,25 +231,44 @@ func (s *qoderSchedulerState) pick(req pluginapi.SchedulerPickRequest) (string, 
 	s.pruneLocked(now)
 
 	sessionKey := schedulerSessionKey(req.Options)
-	hadBinding := false
+	boundQoderFull := false
 	if sessionKey != "" {
 		if binding, ok := s.bindings[sessionKey]; ok && binding.expires.After(now) {
-			for _, candidate := range candidates {
+			for _, candidate := range allCandidates {
 				if candidate.ID != binding.authID {
 					continue
 				}
-				hadBinding = true
+				if !isQoderSchedulerCandidate(candidate) {
+					// The session already belongs to another provider; keep it
+					// there instead of pulling it back to Qoder.
+					s.bindings[sessionKey] = schedulerBinding{authID: candidate.ID, expires: now.Add(schedulerBindingTTL)}
+					return candidate.ID, true
+				}
 				if s.loadLocked(candidate.ID) < s.maxPerAuth {
 					s.bindings[sessionKey] = schedulerBinding{authID: candidate.ID, expires: now.Add(schedulerBindingTTL)}
 					s.reserveLocked(candidate.ID, now)
 					return candidate.ID, true
 				}
+				boundQoderFull = true
 			}
-			if hadBinding {
+			if boundQoderFull {
 				// Keep the binding alive while the bound account is full. This
 				// request overflows, but the next one can return to it.
 				s.bindings[sessionKey] = schedulerBinding{authID: binding.authID, expires: now.Add(schedulerBindingTTL)}
 			}
+		}
+	}
+
+	// Only a genuinely new session is diverted by the half-open breaker.
+	// Existing Qoder sessions keep their binding above, even when the bound
+	// account is full and this request has to overflow to another Qoder account.
+	if !boundQoderFull && qoderQueueBreaker.shouldSkipQoder(queueBreakerModelsForRequest(req)) {
+		if candidate, ok := firstNonQoderCandidate(allCandidates); ok {
+			if sessionKey != "" {
+				s.bindings[sessionKey] = schedulerBinding{authID: candidate.ID, expires: now.Add(schedulerBindingTTL)}
+			}
+			logger.Info("qoder queue breaker: diverting new session model=%s session=%s auth=%s", req.Model, sessionKey, candidate.ID)
+			return candidate.ID, true
 		}
 	}
 
@@ -279,7 +308,7 @@ func (s *qoderSchedulerState) pick(req pluginapi.SchedulerPickRequest) (string, 
 	}
 	underLimit := s.loadLocked(chosen) < s.maxPerAuth
 	s.reserveLocked(chosen, now)
-	if sessionKey != "" && underLimit && !hadBinding {
+	if sessionKey != "" && underLimit && !boundQoderFull {
 		s.bindings[sessionKey] = schedulerBinding{
 			authID:  chosen,
 			expires: now.Add(schedulerBindingTTL),
@@ -345,11 +374,47 @@ func schedulerRequestIsQoder(req pluginapi.SchedulerPickRequest) bool {
 		}
 	}
 	for _, candidate := range req.Candidates {
-		if strings.EqualFold(strings.TrimSpace(candidate.Provider), providerName) {
+		if isQoderSchedulerCandidate(candidate) {
 			return true
 		}
 	}
 	return false
+}
+
+func validSchedulerCandidates(in []pluginapi.SchedulerAuthCandidate) []pluginapi.SchedulerAuthCandidate {
+	out := make([]pluginapi.SchedulerAuthCandidate, 0, len(in))
+	for _, candidate := range in {
+		if strings.TrimSpace(candidate.ID) == "" {
+			continue
+		}
+		out = append(out, candidate)
+	}
+	return out
+}
+
+func isQoderSchedulerCandidate(candidate pluginapi.SchedulerAuthCandidate) bool {
+	if strings.EqualFold(strings.TrimSpace(candidate.Provider), providerName) {
+		return true
+	}
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(candidate.ID)), providerName+"-")
+}
+
+func firstNonQoderCandidate(in []pluginapi.SchedulerAuthCandidate) (pluginapi.SchedulerAuthCandidate, bool) {
+	for _, candidate := range in {
+		if strings.TrimSpace(candidate.ID) == "" || isQoderSchedulerCandidate(candidate) {
+			continue
+		}
+		return candidate, true
+	}
+	return pluginapi.SchedulerAuthCandidate{}, false
+}
+
+func queueBreakerModelsForRequest(req pluginapi.SchedulerPickRequest) []string {
+	models := []string{req.Model}
+	if upstream, ok := resolveModelAlias(req.Model); ok && !strings.EqualFold(upstream, req.Model) {
+		models = append(models, upstream)
+	}
+	return models
 }
 
 func qoderSchedulerCandidates(in []pluginapi.SchedulerAuthCandidate) []pluginapi.SchedulerAuthCandidate {
@@ -482,5 +547,6 @@ func handleSchedulerStatus() map[string]any {
 	return map[string]any{
 		"max_concurrency": cfg.MaxConcurrentPerAuth,
 		"accounts":        qoderScheduler.snapshot(),
+		"queue_breaker":   qoderQueueBreaker.snapshot(),
 	}
 }

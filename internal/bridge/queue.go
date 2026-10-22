@@ -39,6 +39,62 @@ type QueueError struct {
 	WaitTime          int
 }
 
+// QueueObservation describes one request entering the upstream model queue.
+// QueueObserver is set by the plugin so the scheduler can implement a
+// session-aware half-open breaker. It is nil for the standalone CLI.
+type QueueObservation struct {
+	ModelKey     string
+	RequestSetID string
+	SessionKey   string
+	ClientModel  string
+}
+
+var QueueObserver func(QueueObservation)
+
+type queueContextKey struct{}
+
+type queueContext struct {
+	sessionKey  string
+	clientModel string
+}
+
+// WithQueueContext attaches the session/client-model identity to a request so
+// queue observations can be attributed to the right session.
+func WithQueueContext(ctx context.Context, sessionKey, clientModel string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, queueContextKey{}, queueContext{
+		sessionKey:  strings.TrimSpace(sessionKey),
+		clientModel: strings.TrimSpace(clientModel),
+	})
+}
+
+func queueContextFrom(ctx context.Context) queueContext {
+	if ctx == nil {
+		return queueContext{}
+	}
+	value, _ := ctx.Value(queueContextKey{}).(queueContext)
+	return value
+}
+
+func notifyQueueObserver(ctx context.Context, modelKey, requestSetID string) {
+	if QueueObserver == nil {
+		return
+	}
+	qctx := queueContextFrom(ctx)
+	sessionKey := qctx.sessionKey
+	if sessionKey == "" {
+		sessionKey = requestSetID
+	}
+	QueueObserver(QueueObservation{
+		ModelKey:     modelKey,
+		RequestSetID: requestSetID,
+		SessionKey:   sessionKey,
+		ClientModel:  qctx.clientModel,
+	})
+}
+
 // MaxQueueWait bounds the total time a single client request will wait for the
 // model queue to clear. The official CLI defaults to 1h
 // (QODER_MODEL_QUEUE_MAX_WAIT_MS); we default lower so a stalled queue does not
@@ -346,12 +402,15 @@ func (b *Bridge) streamWithQueueRecovery(ctx context.Context, slot *Slot, qurl s
 		if qe == nil {
 			return emittedAny, err
 		}
-		queuedOnce = true
 		requestSetID := StrVal(body, "request_set_id")
 		modelKey := ""
 		if mc, ok := body["model_config"].(map[string]interface{}); ok {
 			modelKey = StrVal(mc, "key")
 		}
+		if !queuedOnce {
+			notifyQueueObserver(ctx, modelKey, requestSetID)
+		}
+		queuedOnce = true
 		if werr := b.waitForQueue(ctx, slot, qe, requestSetID, modelKey, deadline); werr != nil {
 			return emittedAny, err
 		}

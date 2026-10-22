@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
@@ -15,6 +16,23 @@ func resetSchedulerForTest(t *testing.T, max int) *qoderSchedulerState {
 	qoderScheduler = scheduler
 	t.Cleanup(func() { qoderScheduler = previous })
 	return scheduler
+}
+
+func resetQueueBreakerForTest(t *testing.T, threshold int, cooldown time.Duration) *qoderQueueBreakerState {
+	t.Helper()
+	previous := qoderQueueBreaker
+	breaker := newQoderQueueBreaker(true, threshold, cooldown, cooldown, time.Minute)
+	qoderQueueBreaker = breaker
+	t.Cleanup(func() { qoderQueueBreaker = previous })
+	return breaker
+}
+
+func mixedSchedulerCandidates() []pluginapi.SchedulerAuthCandidate {
+	return []pluginapi.SchedulerAuthCandidate{
+		{ID: "qoder-a", Provider: providerName, Priority: 1},
+		{ID: "qoder-b", Provider: providerName, Priority: 1},
+		{ID: "workbuddy-a", Provider: "workbuddy", Priority: 1},
+	}
 }
 
 func schedulerCandidates(ids ...string) []pluginapi.SchedulerAuthCandidate {
@@ -202,5 +220,96 @@ func TestSchedulerSessionKeyFromHeaders(t *testing.T) {
 	opts.Metadata = map[string]any{metadataCallerScope: "caller-a"}
 	if got := schedulerSessionKey(opts); got != "caller-a::header-session" {
 		t.Fatalf("scoped session key = %q", got)
+	}
+}
+
+func TestSchedulerHalfOpenKeepsExistingSessionAndDivertsNewSession(t *testing.T) {
+	s := resetSchedulerForTest(t, 4)
+	breaker := resetQueueBreakerForTest(t, 2, time.Minute)
+	candidates := mixedSchedulerCandidates()
+	model := "deepseek-v4.1-flash"
+	models := []string{"dfmodel", model}
+
+	req := pluginapi.SchedulerPickRequest{
+		Provider:   "mixed",
+		Providers:  []string{providerName, "workbuddy"},
+		Model:      model,
+		Candidates: candidates,
+		Options: pluginapi.SchedulerOptions{
+			Metadata: map[string]any{metadataCanonicalSessionID: "session-existing"},
+		},
+	}
+	first, handled := s.pick(req)
+	if !handled || first != "qoder-a" {
+		t.Fatalf("initial pick = %q handled=%v, want qoder-a", first, handled)
+	}
+	s.trackAttempt("req-existing-1", first)
+
+	breaker.recordQueue(models, "session-existing")
+	breaker.recordQueue(models, "session-waiting")
+	if !breaker.shouldSkipQoder(models) {
+		t.Fatal("breaker did not open")
+	}
+
+	// Existing Qoder session stays on Qoder even while the breaker is open.
+	same, handled := s.pick(req)
+	if !handled || same != first {
+		t.Fatalf("existing session pick = %q handled=%v, want %q", same, handled, first)
+	}
+
+	// A new session is diverted to the first non-Qoder candidate.
+	newReq := req
+	newReq.Options = pluginapi.SchedulerOptions{
+		Metadata: map[string]any{metadataCanonicalSessionID: "session-new"},
+	}
+	diverted, handled := s.pick(newReq)
+	if !handled || diverted != "workbuddy-a" {
+		t.Fatalf("new session pick = %q handled=%v, want workbuddy-a", diverted, handled)
+	}
+
+	// The diverted session remains bound to that provider.
+	again, handled := s.pick(newReq)
+	if !handled || again != "workbuddy-a" {
+		t.Fatalf("new session repeat pick = %q handled=%v, want workbuddy-a", again, handled)
+	}
+}
+
+func TestSchedulerHalfOpenFallsBackToQoderWithoutAlternative(t *testing.T) {
+	s := resetSchedulerForTest(t, 4)
+	breaker := resetQueueBreakerForTest(t, 1, time.Minute)
+	models := []string{"dfmodel", "deepseek-v4.1-flash"}
+	breaker.recordQueue(models, "session-waiting")
+
+	req := pluginapi.SchedulerPickRequest{
+		Provider:   providerName,
+		Model:      "deepseek-v4.1-flash",
+		Candidates: schedulerCandidates("qoder-a", "qoder-b"),
+		Options: pluginapi.SchedulerOptions{
+			Metadata: map[string]any{metadataCanonicalSessionID: "session-new"},
+		},
+	}
+	id, handled := s.pick(req)
+	if !handled || id != "qoder-a" {
+		t.Fatalf("pick = %q handled=%v, want qoder fallback", id, handled)
+	}
+}
+
+func TestSchedulerHalfOpenDoesNotAffectOtherModels(t *testing.T) {
+	s := resetSchedulerForTest(t, 4)
+	breaker := resetQueueBreakerForTest(t, 1, time.Minute)
+	breaker.recordQueue([]string{"dfmodel", "deepseek-v4.1-flash"}, "session-waiting")
+
+	req := pluginapi.SchedulerPickRequest{
+		Provider:   "mixed",
+		Providers:  []string{providerName, "workbuddy"},
+		Model:      "some-other-model",
+		Candidates: mixedSchedulerCandidates(),
+		Options: pluginapi.SchedulerOptions{
+			Metadata: map[string]any{metadataCanonicalSessionID: "session-new"},
+		},
+	}
+	id, handled := s.pick(req)
+	if !handled || id != "qoder-a" {
+		t.Fatalf("pick = %q handled=%v, want qoder-a", id, handled)
 	}
 }
