@@ -172,9 +172,11 @@ func (b *qoderQueueBreakerState) recordQueue(models []string, sessionKey string)
 	}
 }
 
-// recordDone removes one session from the waiting set. A successful request
-// clears the breaker once no Qoder sessions remain in the queue; a failed or
-// canceled request leaves the cooldown in place until it expires.
+// recordDone removes one session from the waiting set on success. A failed or
+// canceled request keeps the session marked as queued so the next attempt for
+// that same session can be diverted even when the global threshold has not been
+// reached yet. Non-queue failures are not added because recordQueue is the only
+// writer of the waiting map.
 func (b *qoderQueueBreakerState) recordDone(models []string, sessionKey string, success bool) {
 	if b == nil || !b.enabled {
 		return
@@ -197,8 +199,13 @@ func (b *qoderQueueBreakerState) recordDone(models []string, sessionKey string, 
 		if st == nil {
 			continue
 		}
+		if !success {
+			// Keep the entry: the session itself has experienced the queue and
+			// should fail over on its next attempt.
+			continue
+		}
 		delete(st.waiting, sessionKey)
-		if success && len(st.waiting) == 0 {
+		if len(st.waiting) == 0 {
 			st.until = time.Time{}
 			st.level = 0
 		}
@@ -226,6 +233,39 @@ func (b *qoderQueueBreakerState) shouldSkipQoder(models []string) bool {
 			continue
 		}
 		if st.until.After(now) || len(st.waiting) >= b.threshold {
+			return true
+		}
+	}
+	return false
+}
+
+// shouldSkipQoderForSession reports whether this specific session has itself
+// been queued for any of the given model keys. This is intentionally separate
+// from the global threshold: a client that keeps one long-lived session should
+// still fail over after its own request hits the queue.
+func (b *qoderQueueBreakerState) shouldSkipQoderForSession(models []string, sessionKey string) bool {
+	if b == nil || !b.enabled {
+		return false
+	}
+	sessionKey = strings.TrimSpace(sessionKey)
+	if sessionKey == "" {
+		return false
+	}
+	keys := normalizeQueueBreakerModels(models)
+	if len(keys) == 0 {
+		return false
+	}
+	now := time.Now()
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.pruneLocked(now)
+	for _, key := range keys {
+		st := b.models[key]
+		if st == nil {
+			continue
+		}
+		if _, ok := st.waiting[sessionKey]; ok {
 			return true
 		}
 	}

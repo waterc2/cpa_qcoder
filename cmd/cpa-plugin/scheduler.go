@@ -210,10 +210,11 @@ func (s *qoderSchedulerState) releaseRequest(requestID string) {
 // "no Qoder candidate", and lets the host fall back to its normal selector.
 //
 // Session-aware half-open behavior:
-//   - a session already bound to Qoder keeps using Qoder, even while the model
-//     queue is congested;
-//   - a new session is routed to the first non-Qoder candidate while the queue
-//     breaker is open;
+//   - a healthy session already bound to Qoder keeps using Qoder;
+//   - a session that has itself hit the model queue is diverted to the best
+//     non-Qoder candidate on its next attempt;
+//   - a new session is diverted once enough distinct sessions are waiting on
+//     the same model;
 //   - if no non-Qoder candidate exists, Qoder remains the fallback.
 func (s *qoderSchedulerState) pick(req pluginapi.SchedulerPickRequest) (string, bool) {
 	if s == nil || !schedulerRequestIsQoder(req) {
@@ -231,7 +232,21 @@ func (s *qoderSchedulerState) pick(req pluginapi.SchedulerPickRequest) (string, 
 	s.pruneLocked(now)
 
 	sessionKey := schedulerSessionKey(req.Options)
+	breakerModels := queueBreakerModelsForRequest(req)
 	boundQoderFull := false
+	divertQueuedSession := func() (string, bool) {
+		if sessionKey == "" || !qoderQueueBreaker.shouldSkipQoderForSession(breakerModels, sessionKey) {
+			return "", false
+		}
+		candidate, ok := bestNonQoderCandidate(allCandidates)
+		if !ok {
+			return "", false
+		}
+		s.bindings[sessionKey] = schedulerBinding{authID: candidate.ID, expires: now.Add(schedulerBindingTTL)}
+		logger.Info("qoder queue breaker: diverting queued session model=%s session=%s auth=%s", req.Model, sessionKey, candidate.ID)
+		return candidate.ID, true
+	}
+
 	if sessionKey != "" {
 		if binding, ok := s.bindings[sessionKey]; ok && binding.expires.After(now) {
 			for _, candidate := range allCandidates {
@@ -243,6 +258,12 @@ func (s *qoderSchedulerState) pick(req pluginapi.SchedulerPickRequest) (string, 
 					// there instead of pulling it back to Qoder.
 					s.bindings[sessionKey] = schedulerBinding{authID: candidate.ID, expires: now.Add(schedulerBindingTTL)}
 					return candidate.ID, true
+				}
+				// A session that has itself been queued should fail over even
+				// if it already has a Qoder binding. This keeps long-lived
+				// conversations from retrying the same congested channel.
+				if diverted, handled := divertQueuedSession(); handled {
+					return diverted, true
 				}
 				if s.loadLocked(candidate.ID) < s.maxPerAuth {
 					s.bindings[sessionKey] = schedulerBinding{authID: candidate.ID, expires: now.Add(schedulerBindingTTL)}
@@ -259,10 +280,15 @@ func (s *qoderSchedulerState) pick(req pluginapi.SchedulerPickRequest) (string, 
 		}
 	}
 
-	// Only a genuinely new session is diverted by the half-open breaker.
-	// Existing Qoder sessions keep their binding above, even when the bound
-	// account is full and this request has to overflow to another Qoder account.
-	if !boundQoderFull && qoderQueueBreaker.shouldSkipQoder(queueBreakerModelsForRequest(req)) {
+	// A session that has already hit the queue is diverted on its next attempt,
+	// even before the global threshold opens.
+	if diverted, handled := divertQueuedSession(); handled {
+		return diverted, true
+	}
+
+	// A genuinely new session is diverted once enough distinct sessions are
+	// waiting on the same model. Existing healthy sessions keep their binding.
+	if !boundQoderFull && qoderQueueBreaker.shouldSkipQoder(breakerModels) {
 		if candidate, ok := bestNonQoderCandidate(allCandidates); ok {
 			if sessionKey != "" {
 				s.bindings[sessionKey] = schedulerBinding{authID: candidate.ID, expires: now.Add(schedulerBindingTTL)}

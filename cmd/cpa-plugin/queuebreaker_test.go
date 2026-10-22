@@ -43,7 +43,7 @@ func TestQueueBreakerSuccessRecoversWhenQueueEmpty(t *testing.T) {
 	}
 }
 
-func TestQueueBreakerFailureKeepsCooldown(t *testing.T) {
+func TestQueueBreakerFailureKeepsCooldownAndSessionMarked(t *testing.T) {
 	b := newQoderQueueBreaker(true, 1, time.Minute, time.Minute, time.Minute)
 	models := []string{"dfmodel"}
 
@@ -51,6 +51,33 @@ func TestQueueBreakerFailureKeepsCooldown(t *testing.T) {
 	b.recordDone(models, "session-a", false)
 	if !b.shouldSkipQoder(models) {
 		t.Fatal("failed request cleared the cooldown")
+	}
+	if !b.shouldSkipQoderForSession(models, "session-a") {
+		t.Fatal("failed queued session was not remembered")
+	}
+	if b.shouldSkipQoderForSession(models, "session-b") {
+		t.Fatal("unrelated session was marked as queued")
+	}
+
+	b.recordDone(models, "session-a", true)
+	if b.shouldSkipQoderForSession(models, "session-a") {
+		t.Fatal("successful retry did not clear the session mark")
+	}
+	if b.shouldSkipQoder(models) {
+		t.Fatal("successful retry did not clear the cooldown")
+	}
+}
+
+func TestQueueBreakerSessionMarkIndependentOfThreshold(t *testing.T) {
+	b := newQoderQueueBreaker(true, 5, time.Minute, time.Minute, time.Minute)
+	models := []string{"dfmodel"}
+
+	b.recordQueue(models, "session-a")
+	if b.shouldSkipQoder(models) {
+		t.Fatal("global breaker opened before threshold")
+	}
+	if !b.shouldSkipQoderForSession(models, "session-a") {
+		t.Fatal("session mark should not depend on the global threshold")
 	}
 }
 

@@ -245,16 +245,24 @@ func TestSchedulerHalfOpenKeepsExistingSessionAndDivertsNewSession(t *testing.T)
 	}
 	s.trackAttempt("req-existing-1", first)
 
-	breaker.recordQueue(models, "session-existing")
-	breaker.recordQueue(models, "session-waiting")
+	breaker.recordQueue(models, "session-waiting-a")
+	breaker.recordQueue(models, "session-waiting-b")
 	if !breaker.shouldSkipQoder(models) {
 		t.Fatal("breaker did not open")
 	}
 
-	// Existing Qoder session stays on Qoder even while the breaker is open.
+	// A healthy existing Qoder session stays on Qoder while the breaker is open.
 	same, handled := s.pick(req)
 	if !handled || same != first {
-		t.Fatalf("existing session pick = %q handled=%v, want %q", same, handled, first)
+		t.Fatalf("healthy existing session pick = %q handled=%v, want %q", same, handled, first)
+	}
+
+	// Once that session itself hits the queue, its next attempt is diverted
+	// instead of retrying the congested Qoder channel.
+	breaker.recordQueue(models, "session-existing")
+	divertedExisting, handled := s.pick(req)
+	if !handled || divertedExisting != "workbuddy-a" {
+		t.Fatalf("queued existing session pick = %q handled=%v, want workbuddy-a", divertedExisting, handled)
 	}
 
 	// A new session is diverted to the highest-priority non-Qoder candidate.
@@ -337,5 +345,39 @@ func TestSchedulerHalfOpenPrefersHigherPriorityNonQoder(t *testing.T) {
 	id, handled := s.pick(req)
 	if !handled || id != "workbuddy-a" {
 		t.Fatalf("pick = %q handled=%v, want higher-priority workbuddy-a", id, handled)
+	}
+}
+
+func TestSchedulerDivertsQueuedSessionBelowGlobalThreshold(t *testing.T) {
+	s := resetSchedulerForTest(t, 4)
+	breaker := resetQueueBreakerForTest(t, 5, time.Minute)
+	models := []string{"dfmodel", "deepseek-v4.1-flash"}
+	model := "deepseek-v4.1-flash"
+	candidates := mixedSchedulerCandidates()
+
+	req := pluginapi.SchedulerPickRequest{
+		Provider:   "mixed",
+		Providers:  []string{providerName, "workbuddy"},
+		Model:      model,
+		Candidates: candidates,
+		Options: pluginapi.SchedulerOptions{
+			Metadata: map[string]any{metadataCanonicalSessionID: "session-one"},
+		},
+	}
+	first, handled := s.pick(req)
+	if !handled || first != "qoder-a" {
+		t.Fatalf("initial pick = %q handled=%v, want qoder-a", first, handled)
+	}
+	s.trackAttempt("req-one", first)
+
+	breaker.recordQueue(models, "session-one")
+	breaker.recordDone(models, "session-one", false)
+	if breaker.shouldSkipQoder(models) {
+		t.Fatal("global breaker should not open below threshold")
+	}
+
+	diverted, handled := s.pick(req)
+	if !handled || diverted != "workbuddy-a" {
+		t.Fatalf("queued session pick = %q handled=%v, want workbuddy-a", diverted, handled)
 	}
 }

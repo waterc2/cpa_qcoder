@@ -321,18 +321,60 @@ func (b *Bridge) FinishQueue(slot *Slot, requestSetID, modelKey, userID string, 
 	return err
 }
 
+// queueShouldFailoverImmediately decides whether a queue signal should be
+// returned to the caller instead of waiting. Qoder sometimes reports
+// queueCount=0 / serviceAvailable=false on submit while the status endpoint
+// simultaneously says the model is available; waiting 30s and retrying just
+// repeats the same 403. In that case, fail over to the next account/provider
+// immediately. The same applies when a retry after a successful status poll is
+// queued again.
+func queueShouldFailoverImmediately(qe *QueueError, retriedAfterAvailable bool) bool {
+	if qe == nil {
+		return false
+	}
+	if retriedAfterAvailable {
+		return true
+	}
+	return qe.QueueCount <= 0 && !qe.ServiceAvailable
+}
+
 // waitForQueue drains a queued model: it polls the queue status until the model
-// becomes available or the deadline passes. It returns nil when the caller
-// should retry the chat request, or an error when the wait timed out/cancelled.
-func (b *Bridge) waitForQueue(ctx context.Context, slot *Slot, qe *QueueError, requestSetID, modelKey string, deadline time.Time) error {
+// becomes available or the deadline passes. It returns available=true when the
+// status endpoint reported the model as available (the caller should retry the
+// chat request), or an error when the wait timed out/cancelled.
+func (b *Bridge) waitForQueue(ctx context.Context, slot *Slot, qe *QueueError, requestSetID, modelKey string, deadline time.Time) (bool, error) {
 	queueType := qe.QueueType
 	for {
 		if ctx.Err() != nil {
-			return ctx.Err()
+			return false, ctx.Err()
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("model queue wait exceeded (model=%s queueType=%s deadline=%s)",
+			return false, fmt.Errorf("model queue wait exceeded (model=%s queueType=%s deadline=%s)",
 				modelKey, queueType, deadline.Format(time.RFC3339))
+		}
+
+		// Poll before sleeping. The status endpoint often reports the model as
+		// available immediately, so sleeping retryAfterSeconds first only adds
+		// latency before the next chat attempt.
+		st, err := b.GetQueueStatus(ctx, slot, requestSetID, modelKey, queueType)
+		if err != nil {
+			logger.Info("[ModelQueue] status poll failed: %v", err)
+			// Poll failure: fall through and retry the chat anyway after the
+			// wait, so a broken status endpoint does not strand the request.
+			return false, nil
+		}
+		logger.Info("[ModelQueue] status model=%s isQueued=%v serviceAvailable=%v queueCount=%d",
+			st.ModelKey, st.IsQueued, st.ServiceAvailable, st.QueueCount)
+		if st.ServiceAvailable && !st.IsQueued {
+			return true, nil
+		}
+		qe = &QueueError{
+			IsQueued:          st.IsQueued,
+			ServiceAvailable:  st.ServiceAvailable,
+			QueueType:         st.QueueType,
+			QueueCount:        st.QueueCount,
+			RetryAfterSeconds: st.RetryAfterSeconds,
+			WaitTime:          st.WaitTime,
 		}
 
 		wait := time.Duration(qe.RetryAfterSeconds) * time.Second
@@ -350,41 +392,21 @@ func (b *Bridge) waitForQueue(ctx context.Context, slot *Slot, qe *QueueError, r
 			modelKey, queueType, qe.QueueCount, wait, requestSetID)
 		if wait > 0 {
 			if err := sleepCtx(ctx, wait); err != nil {
-				return err
+				return false, err
 			}
-		}
-
-		st, err := b.GetQueueStatus(ctx, slot, requestSetID, modelKey, queueType)
-		if err != nil {
-			logger.Info("[ModelQueue] status poll failed: %v", err)
-			// Poll failure: fall through and retry the chat anyway after the
-			// wait, so a broken status endpoint does not strand the request.
-			return nil
-		}
-		logger.Info("[ModelQueue] status model=%s isQueued=%v serviceAvailable=%v queueCount=%d",
-			st.ModelKey, st.IsQueued, st.ServiceAvailable, st.QueueCount)
-		if st.ServiceAvailable && !st.IsQueued {
-			return nil
-		}
-		qe = &QueueError{
-			IsQueued:          st.IsQueued,
-			ServiceAvailable:  st.ServiceAvailable,
-			QueueType:         st.QueueType,
-			QueueCount:        st.QueueCount,
-			RetryAfterSeconds: st.RetryAfterSeconds,
-			WaitTime:          st.WaitTime,
 		}
 	}
 }
 
 // streamWithQueueRecovery wraps streamWithSlot with model-queue waiting. When
 // upstream signals the model is queued, it polls the queue and retries the same
-// slot until the model frees up or deadline elapses, instead of failing the
-// request or failing over immediately. deadline is the absolute time budget for
-// this slot (see PerAccountQueueWait / MaxQueueWait).
+// slot until the model frees up or deadline elapses. Empty/fake queue signals
+// are returned immediately so the caller can fail over to another account or
+// provider instead of hanging for the full wait budget.
 func (b *Bridge) streamWithQueueRecovery(ctx context.Context, slot *Slot, qurl string, body map[string]interface{}, extra map[string]string, deadline time.Time, onDelta func(Delta)) (bool, error) {
 	emittedAny := false
 	queuedOnce := false
+	retriedAfterAvailable := false
 	startedAt := time.Now()
 	for {
 		emitted, err := b.streamWithSlot(ctx, slot, qurl, body, extra, onDelta)
@@ -411,9 +433,16 @@ func (b *Bridge) streamWithQueueRecovery(ctx context.Context, slot *Slot, qurl s
 			notifyQueueObserver(ctx, modelKey, requestSetID)
 		}
 		queuedOnce = true
-		if werr := b.waitForQueue(ctx, slot, qe, requestSetID, modelKey, deadline); werr != nil {
+		if queueShouldFailoverImmediately(qe, retriedAfterAvailable) {
+			logger.Info("[ModelQueue] queueCount=%d serviceAvailable=%v -> failover instead of waiting (requestSet=%s)",
+				qe.QueueCount, qe.ServiceAvailable, requestSetID)
 			return emittedAny, err
 		}
+		available, werr := b.waitForQueue(ctx, slot, qe, requestSetID, modelKey, deadline)
+		if werr != nil {
+			return emittedAny, err
+		}
+		retriedAfterAvailable = available
 	}
 }
 

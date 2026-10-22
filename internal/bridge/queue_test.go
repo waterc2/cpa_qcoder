@@ -77,3 +77,25 @@ func TestEnvQueueDuration(t *testing.T) {
 		t.Fatalf("bogus ms fallback = %s, want %s", got, def)
 	}
 }
+
+func TestQueueShouldFailoverImmediately(t *testing.T) {
+	tests := []struct {
+		name                  string
+		qe                    *QueueError
+		retriedAfterAvailable bool
+		want                  bool
+	}{
+		{name: "nil", qe: nil, want: false},
+		{name: "empty fake queue", qe: &QueueError{QueueCount: 0, ServiceAvailable: false}, want: true},
+		{name: "real queue", qe: &QueueError{QueueCount: 3, ServiceAvailable: false}, want: false},
+		{name: "available", qe: &QueueError{QueueCount: 0, ServiceAvailable: true}, want: false},
+		{name: "queued again after available", qe: &QueueError{QueueCount: 3, ServiceAvailable: false}, retriedAfterAvailable: true, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := queueShouldFailoverImmediately(tt.qe, tt.retriedAfterAvailable); got != tt.want {
+				t.Fatalf("queueShouldFailoverImmediately() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
