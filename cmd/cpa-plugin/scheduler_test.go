@@ -257,7 +257,7 @@ func TestSchedulerHalfOpenKeepsExistingSessionAndDivertsNewSession(t *testing.T)
 		t.Fatalf("existing session pick = %q handled=%v, want %q", same, handled, first)
 	}
 
-	// A new session is diverted to the first non-Qoder candidate.
+	// A new session is diverted to the highest-priority non-Qoder candidate.
 	newReq := req
 	newReq.Options = pluginapi.SchedulerOptions{
 		Metadata: map[string]any{metadataCanonicalSessionID: "session-new"},
@@ -311,5 +311,31 @@ func TestSchedulerHalfOpenDoesNotAffectOtherModels(t *testing.T) {
 	id, handled := s.pick(req)
 	if !handled || id != "qoder-a" {
 		t.Fatalf("pick = %q handled=%v, want qoder-a", id, handled)
+	}
+}
+
+func TestSchedulerHalfOpenPrefersHigherPriorityNonQoder(t *testing.T) {
+	s := resetSchedulerForTest(t, 4)
+	breaker := resetQueueBreakerForTest(t, 1, time.Minute)
+	models := []string{"dfmodel", "deepseek-v4.1-flash"}
+	breaker.recordQueue(models, "session-waiting")
+
+	req := pluginapi.SchedulerPickRequest{
+		Provider:  "mixed",
+		Providers: []string{providerName, "clinepassbridge", "workbuddy"},
+		Model:     "deepseek-v4.1-flash",
+		Candidates: []pluginapi.SchedulerAuthCandidate{
+			// Host order puts the negative-priority fallback first.
+			{ID: "clinepassbridge-a", Provider: "clinepassbridge", Priority: -5},
+			{ID: "qoder-a", Provider: providerName, Priority: 1},
+			{ID: "workbuddy-a", Provider: "workbuddy", Priority: 0},
+		},
+		Options: pluginapi.SchedulerOptions{
+			Metadata: map[string]any{metadataCanonicalSessionID: "session-new"},
+		},
+	}
+	id, handled := s.pick(req)
+	if !handled || id != "workbuddy-a" {
+		t.Fatalf("pick = %q handled=%v, want higher-priority workbuddy-a", id, handled)
 	}
 }

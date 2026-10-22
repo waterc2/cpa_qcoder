@@ -263,7 +263,7 @@ func (s *qoderSchedulerState) pick(req pluginapi.SchedulerPickRequest) (string, 
 	// Existing Qoder sessions keep their binding above, even when the bound
 	// account is full and this request has to overflow to another Qoder account.
 	if !boundQoderFull && qoderQueueBreaker.shouldSkipQoder(queueBreakerModelsForRequest(req)) {
-		if candidate, ok := firstNonQoderCandidate(allCandidates); ok {
+		if candidate, ok := bestNonQoderCandidate(allCandidates); ok {
 			if sessionKey != "" {
 				s.bindings[sessionKey] = schedulerBinding{authID: candidate.ID, expires: now.Add(schedulerBindingTTL)}
 			}
@@ -399,14 +399,23 @@ func isQoderSchedulerCandidate(candidate pluginapi.SchedulerAuthCandidate) bool 
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(candidate.ID)), providerName+"-")
 }
 
-func firstNonQoderCandidate(in []pluginapi.SchedulerAuthCandidate) (pluginapi.SchedulerAuthCandidate, bool) {
+// bestNonQoderCandidate returns the highest-priority non-Qoder candidate.
+// Candidate order from the host is not a priority order, so picking the first
+// non-Qoder entry can select a negative-priority fallback while a better
+// fallback is also available.
+func bestNonQoderCandidate(in []pluginapi.SchedulerAuthCandidate) (pluginapi.SchedulerAuthCandidate, bool) {
+	var best pluginapi.SchedulerAuthCandidate
+	found := false
 	for _, candidate := range in {
 		if strings.TrimSpace(candidate.ID) == "" || isQoderSchedulerCandidate(candidate) {
 			continue
 		}
-		return candidate, true
+		if !found || candidate.Priority > best.Priority {
+			best = candidate
+			found = true
+		}
 	}
-	return pluginapi.SchedulerAuthCandidate{}, false
+	return best, found
 }
 
 func queueBreakerModelsForRequest(req pluginapi.SchedulerPickRequest) []string {
