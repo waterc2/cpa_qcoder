@@ -317,12 +317,33 @@ func handleExecStream(raw []byte) ([]byte, error) {
 	headers := streamHeaders()
 	sessionKey := executorSessionKey(req.ExecutorRequest)
 
-	// Async: emit chunks through the host stream and return immediately.
+	// Async: preflight the first upstream event before opening the host stream.
+	// If Qoder answers with a queue/resource-limit error before any content,
+	// return an executor error so the host can retry another auth/provider in
+	// the same request. Without this, the host has already sent HTTP 200 and
+	// the client sees the upstream 403 as a stream error.
 	if req.StreamID != "" {
 		ctx, cancel := newExecContext()
 		ctx = bridge.WithQueueContext(ctx, sessionKey, qr.clientModel)
-		go pumpStream(ctx, cancel, req.StreamID, b, qr, frame, sessionKey)
-		return okEnvelope(streamResponse{Headers: headers})
+		preflight := newStreamPreflight()
+		go pumpStream(ctx, cancel, req.StreamID, b, qr, frame, sessionKey, preflight)
+		select {
+		case <-preflight.ready:
+			preflight.releaseNow()
+			return okEnvelope(streamResponse{Headers: headers})
+		case err := <-preflight.failed:
+			cancel()
+			msg, et := bridge.FriendlyError(err)
+			if et == "" {
+				et = "qoder_error"
+			}
+			return errorEnvelopeStatus(et, msg, bridge.ErrorStatus(err)), nil
+		case <-time.After(10 * time.Second):
+			// No first event yet: open the stream and let it continue. A later
+			// error is emitted as a normal stream error.
+			preflight.abandon()
+			return okEnvelope(streamResponse{Headers: headers})
+		}
 	}
 
 	// Sync: collect all chunks and return them in one response.
@@ -399,16 +420,89 @@ func collectStream(ctx context.Context, b *bridge.Bridge, qr *qoderRequest, fram
 	return chunks, nil
 }
 
+// streamPreflight gates the async stream until the first upstream event is
+// known. The handler waits on ready/failed; the pump waits on release before
+// emitting the first chunk.
+type streamPreflight struct {
+	mu          sync.Mutex
+	decided     bool
+	ready       chan struct{}
+	failed      chan error
+	release     chan struct{}
+	releaseOnce sync.Once
+}
+
+func newStreamPreflight() *streamPreflight {
+	return &streamPreflight{
+		ready:   make(chan struct{}),
+		failed:  make(chan error, 1),
+		release: make(chan struct{}),
+	}
+}
+
+func (p *streamPreflight) markReady() bool {
+	if p == nil {
+		return false
+	}
+	p.mu.Lock()
+	if p.decided {
+		p.mu.Unlock()
+		return false
+	}
+	p.decided = true
+	p.mu.Unlock()
+	close(p.ready)
+	return true
+}
+
+func (p *streamPreflight) fail(err error) bool {
+	if p == nil || err == nil {
+		return false
+	}
+	p.mu.Lock()
+	if p.decided {
+		p.mu.Unlock()
+		return false
+	}
+	p.decided = true
+	p.mu.Unlock()
+	p.failed <- err
+	return true
+}
+
+func (p *streamPreflight) abandon() {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	p.decided = true
+	p.mu.Unlock()
+	p.releaseNow()
+}
+
+func (p *streamPreflight) releaseNow() {
+	if p == nil {
+		return
+	}
+	p.releaseOnce.Do(func() { close(p.release) })
+}
+
 // pumpStream emits chunks to the host as they arrive, then closes the stream.
-func pumpStream(ctx context.Context, cancel context.CancelFunc, streamID string, b *bridge.Bridge, qr *qoderRequest, frame bool, sessionKey string) {
+func pumpStream(ctx context.Context, cancel context.CancelFunc, streamID string, b *bridge.Bridge, qr *qoderRequest, frame bool, sessionKey string, preflight *streamPreflight) {
 	defer cancel()
-	defer streamClose(streamID)
+	closeStream := true
+	defer func() {
+		if closeStream {
+			streamClose(streamID)
+		}
+	}()
 
 	reqID := "chatcmpl-" + cosy.NewRequestID()
 	created := cosy.UnixSec()
 	var toolCallBuf []interface{}
 	var inTok, outTok, cachedTok int
 	emitFailed := false
+	preflightStarted := false
 
 	err := b.CallQoderWithOpts(ctx, qr.agent, qr.messages, qr.model, qr.tools, qr.opts, func(d bridge.Delta) {
 		if emitFailed || d.Err != nil {
@@ -416,6 +510,17 @@ func pumpStream(ctx context.Context, cancel context.CancelFunc, streamID string,
 		}
 		if d.InputTokens > 0 || d.OutputTokens > 0 || d.CachedTokens > 0 {
 			inTok, outTok, cachedTok = d.InputTokens, d.OutputTokens, d.CachedTokens
+		}
+		if preflight != nil && !preflightStarted && (d.Content != "" || d.Reasoning != "" || d.ToolCalls != nil) {
+			preflightStarted = true
+			if preflight.markReady() {
+				select {
+				case <-preflight.release:
+				case <-ctx.Done():
+					emitFailed = true
+					return
+				}
+			}
 		}
 		chunk := bridge.MakeChatChunk(reqID, created, qr.clientModel)
 		choices := chunk["choices"].([]interface{})
@@ -443,6 +548,12 @@ func pumpStream(ctx context.Context, cancel context.CancelFunc, streamID string,
 	})
 	qoderQueueBreaker.recordDone([]string{qr.model, qr.clientModel}, sessionKey, err == nil && !emitFailed)
 	if err != nil {
+		if preflight != nil && !preflightStarted {
+			if preflight.fail(err) {
+				closeStream = false
+				return
+			}
+		}
 		if !emitFailed {
 			msg, _ := bridge.FriendlyError(err)
 			streamEmitError(streamID, msg)
@@ -451,6 +562,16 @@ func pumpStream(ctx context.Context, cancel context.CancelFunc, streamID string,
 	}
 	if emitFailed {
 		return
+	}
+	if preflight != nil && !preflightStarted {
+		preflightStarted = true
+		if preflight.markReady() {
+			select {
+			case <-preflight.release:
+			case <-ctx.Done():
+				return
+			}
+		}
 	}
 
 	finish := "stop"
