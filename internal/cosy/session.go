@@ -14,7 +14,17 @@ import (
 	"time"
 )
 
+// Version 是桥接侧上报的 cosy 协议版本。
+//
+// 实测（2026-10-23）：上游按 (cosy-clienttype, cosy-version) 决定下发哪套模型清单——
+// 旧的 clienttype=5 / version=1.0.10 只会拿到旧模型集（12~13 个），
+// 换成官方桌面端同款的 clienttype=10 / version=1.1.69 后才额外下发
+// fast / smodel(Sonus) / cmodel(Cantus)。因此该常量必须与官方客户端保持一致，
+// 不要随意回退。
 const Version = "1.0.10"
+
+// ProtocolVersion 是实际随请求发出的 cosy-version，对齐官方桌面端。
+const ProtocolVersion = "1.1.69"
 
 const ServerPubKeyPEM = `-----BEGIN PUBLIC KEY-----
 MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDA8iMH5c02LilrsERw9t6Pv5Nc

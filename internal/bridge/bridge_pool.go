@@ -9,7 +9,13 @@ import (
 // NewSlotFromSecret 用账号凭证构建一个可入池的 Slot（复用 NewBridge 的
 // 会话构建逻辑：OAuth 直接 userinfo，PAT 走 jobToken 交换 + 稳定指纹）。
 func NewSlotFromSecret(id, name string, region account.Region, secret string) (*Slot, error) {
-	b, err := NewBridge(secret, region, nil)
+	return NewSlotFromSecretWithFP(id, name, region, secret, nil)
+}
+
+// NewSlotFromSecretWithFP 用账号凭证构建 Slot；fp 非空时该账号走新版推理协议
+// （可访问 Sonus / Cantus / fast）。
+func NewSlotFromSecretWithFP(id, name string, region account.Region, secret string, fp *account.CheckinFingerprint) (*Slot, error) {
+	b, err := NewBridgeWithFP(secret, region, nil, fp)
 	if err != nil {
 		return nil, err
 	}

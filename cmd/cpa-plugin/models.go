@@ -33,9 +33,19 @@ var fallbackModels = []bridge.QoderModel{
 	{Key: "mmodel", DisplayName: "MiniMax-M3.1-Flash", PriceFactor: 0.1, ContextWindow: 200000, MaxOutputTokens: 16384},
 }
 
-func staticModelsRaw() []pluginapi.ModelInfo {
-	out := make([]pluginapi.ModelInfo, 0, len(fallbackModels))
-	for _, m := range fallbackModels {
+// modernFallbackModels are only exposed for accounts with a real device
+// fingerprint. They are the three models the upstream adds when the account
+// negotiates the modern inference protocol; advertising them to legacy
+// accounts would produce requests the upstream cannot serve.
+var modernFallbackModels = []bridge.QoderModel{
+	{Key: "smodel", DisplayName: "Sonus", PriceFactor: 8, IsReasoning: true, ContextWindow: 200000, MaxOutputTokens: 32768},
+	{Key: "cmodel", DisplayName: "Cantus", PriceFactor: 4, IsReasoning: true, ContextWindow: 200000, MaxOutputTokens: 32768},
+	{Key: "fast", DisplayName: "Fast", PriceFactor: 0.8, ContextWindow: 200000, MaxOutputTokens: 16384},
+}
+
+func modelsInfoRaw(list []bridge.QoderModel) []pluginapi.ModelInfo {
+	out := make([]pluginapi.ModelInfo, 0, len(list))
+	for _, m := range list {
 		if m.ContextWindow == 0 {
 			m.ContextWindow = 180000
 		}
@@ -48,10 +58,24 @@ func staticModelsRaw() []pluginapi.ModelInfo {
 	return out
 }
 
+func staticModelsRaw() []pluginapi.ModelInfo {
+	return modelsInfoRaw(fallbackModels)
+}
+
 // staticModels is the fallback catalog with the user's model selection and
 // exposed alias names applied.
 func staticModels() []pluginapi.ModelInfo {
 	return applyModelAliases(applyModelSelection(staticModelsRaw()))
+}
+
+// staticModelsForAuth adds the modern-protocol models to the fallback catalog
+// only when this account has a fingerprint that can actually request them.
+func staticModelsForAuth(sa *storedAuth) []pluginapi.ModelInfo {
+	list := fallbackModels
+	if sa != nil && sa.Fingerprint.hasRealFingerprint() {
+		list = append(append([]bridge.QoderModel{}, fallbackModels...), modernFallbackModels...)
+	}
+	return applyModelAliases(applyModelSelection(modelsInfoRaw(list)))
 }
 
 func modelInfoFor(m bridge.QoderModel) pluginapi.ModelInfo {
@@ -102,7 +126,7 @@ func handleModelForAuth(raw []byte) ([]byte, error) {
 	if err != nil {
 		return okEnvelope(pluginapi.ModelResponse{Provider: providerName, Models: filterExcludedModels(staticModels(), req.Host)})
 	}
-	models := staticModels()
+	models := staticModelsForAuth(sa)
 	if b, err := bridgeForAuth(sa); err == nil {
 		if list, err := b.ListAvailableModels(); err == nil && len(list) > 0 {
 			live := make([]pluginapi.ModelInfo, 0, len(list))

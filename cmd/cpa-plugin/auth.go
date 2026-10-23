@@ -20,10 +20,58 @@ type checkinFingerprint struct {
 	MachineID    string `json:"machine_id"`
 	MachineToken string `json:"machine_token"`
 	MachineType  string `json:"machine_type"`
-	MachineCode  string `json:"machine_code,omitempty"`
-	Hostname     string `json:"hostname,omitempty"`
-	MachineOS    string `json:"machine_os,omitempty"`
+	ClientIP     string `json:"client_ip,omitempty"`
+	ClientType   string `json:"client_type,omitempty"`
 	Version      string `json:"version,omitempty"`
+	MachineOS    string `json:"machine_os,omitempty"`
+	Hostname     string `json:"hostname,omitempty"`
+	Scene        string `json:"scene,omitempty"`
+	Product      string `json:"product,omitempty"`
+	DataPolicy   string `json:"data_policy,omitempty"`
+	MachineCode  string `json:"machine_code,omitempty"`
+}
+
+// hasRealFingerprint reports whether the credential has the device fingerprint
+// required to switch to the modern inference protocol. machine_token is the
+// switch the bridge checks; machine_id alone only helps the check-in campaign.
+func (fp *checkinFingerprint) hasRealFingerprint() bool {
+	return fp != nil && strings.TrimSpace(fp.MachineToken) != ""
+}
+
+// toAccountFingerprint converts the auth-file shape into the bridge shape.
+// Returning nil keeps the account on the legacy protocol, so partially filled
+// fingerprints cannot accidentally change request headers.
+func (fp *checkinFingerprint) toAccountFingerprint() *account.CheckinFingerprint {
+	if !fp.hasRealFingerprint() {
+		return nil
+	}
+	return &account.CheckinFingerprint{
+		MachineID:    fp.MachineID,
+		MachineToken: fp.MachineToken,
+		MachineType:  fp.MachineType,
+		ClientIP:     fp.ClientIP,
+		ClientType:   fp.ClientType,
+		Version:      fp.Version,
+		MachineOS:    fp.MachineOS,
+		Hostname:     fp.Hostname,
+		Scene:        fp.Scene,
+		Product:      fp.Product,
+		DataPolicy:   fp.DataPolicy,
+		MachineCode:  fp.MachineCode,
+	}
+}
+
+// fingerprintCacheKey invalidates a cached bridge when the fingerprint changes
+// without the secret changing (editing checkin_fingerprint in the auth file).
+func fingerprintCacheKey(fp *account.CheckinFingerprint) string {
+	if fp == nil {
+		return ""
+	}
+	raw, err := json.Marshal(fp)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
 }
 
 // storedAuth is the provider-owned credential payload persisted in the CPA auth
@@ -159,7 +207,10 @@ func parseStored(raw []byte) (*storedAuth, error) {
 	}
 	if fpRaw, ok := doc["checkin_fingerprint"]; ok {
 		var fp checkinFingerprint
-		if json.Unmarshal(fpRaw, &fp) == nil && fp.MachineID != "" {
+		// Keep the fingerprint if either identity field is present. The bridge
+		// only switches protocols when machine_token is set, but accepting a
+		// token-only document leaves room for the missing id to be filled in.
+		if json.Unmarshal(fpRaw, &fp) == nil && (fp.MachineID != "" || fp.MachineToken != "") {
 			sa.Fingerprint = &fp
 		}
 	}
@@ -445,18 +496,7 @@ func handleRefreshAuth(raw []byte) ([]byte, error) {
 		return unchangedRefresh(sa), nil
 	}
 
-	var fp *account.CheckinFingerprint
-	if sa.Fingerprint != nil {
-		fp = &account.CheckinFingerprint{
-			MachineID:    sa.Fingerprint.MachineID,
-			MachineToken: sa.Fingerprint.MachineToken,
-			MachineType:  sa.Fingerprint.MachineType,
-			MachineCode:  sa.Fingerprint.MachineCode,
-			Hostname:     sa.Fingerprint.Hostname,
-			MachineOS:    sa.Fingerprint.MachineOS,
-			Version:      sa.Fingerprint.Version,
-		}
-	}
+	fp := sa.Fingerprint.toAccountFingerprint()
 
 	res, err := refreshDeviceToken(sa.region(), refreshToken, fp)
 	if err != nil {

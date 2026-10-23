@@ -35,6 +35,11 @@ func secretPath(accountID string) (string, error) {
 	return filepath.Join(d, id+".token"), nil
 }
 
+// SecretPathFor 返回指定账号 secret 文件的路径（供 token 年龄判断等使用）。
+func SecretPathFor(accountID string) (string, error) {
+	return secretPath(accountID)
+}
+
 func normalizeSecret(raw string) string {
 	s := strings.TrimSpace(raw)
 	if s == "" {

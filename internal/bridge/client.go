@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"qoder2api/account"
 	"qoder2api/internal/cosy"
 	"strings"
 	"time"
@@ -17,10 +18,26 @@ import (
 
 type BearerClient struct {
 	sess *cosy.SessionContext
+	// fp 非空时启用新版协议（对齐官方桌面端 0.4.8+）：
+	//   cosy-clienttype=10 / cosy-version=1.1.69 / user-agent=undici，
+	//   并使用 fp 中的真实设备指纹。这是 model/list 额外下发
+	//   fast / smodel(Sonus) / cmodel(Cantus) 以及推理通过设备校验的前提。
+	// fp 为空时保持旧协议与派生指纹，行为与改造前完全一致。
+	fp *account.CheckinFingerprint
 }
 
 func NewBearerClient(sess *cosy.SessionContext) *BearerClient {
 	return &BearerClient{sess: sess}
+}
+
+// NewBearerClientWithFP 构造使用真实设备指纹的客户端（新版协议）。
+func NewBearerClientWithFP(sess *cosy.SessionContext, fp *account.CheckinFingerprint) *BearerClient {
+	return &BearerClient{sess: sess, fp: fp}
+}
+
+// modernProtocol 返回该客户端是否启用新版协议。
+func (c *BearerClient) modernProtocol() bool {
+	return c.fp != nil && c.fp.MachineToken != ""
 }
 
 func (c *BearerClient) buildHeaders(pathSig, body, accept string, extra map[string]string) (map[string]string, error) {
@@ -32,30 +49,70 @@ func (c *BearerClient) buildHeaders(pathSig, body, accept string, extra map[stri
 	sig := cosy.SignRequest(payloadB64, c.sess.CosyKey, date, body, pathSig)
 	bearer := cosy.ComposeBearer(payloadB64, sig)
 
+	// 默认旧协议（改造前行为）：CLI 客户端 5 / 1.0.10 + 派生指纹
+	clientType := "5"
+	version := cosy.Version
+	userAgent := "Go-http-client/2.0"
+	machineID := c.sess.MachineId
+	machineToken := c.sess.MachineToken
+	machineType := c.sess.MachineType
+	scene := "assistant"
+	product := "ide" // 决定配额池：ide 才能走个人拓展包
+	dataPolicy := "agree"
+	clientIP := ""
+
+	// 配置了真实指纹 → 切换到官方桌面端同款的新版协议
+	if c.modernProtocol() {
+		fp := c.fp
+		clientType = orDefault(fp.ClientType, "10")
+		version = orDefault(fp.Version, "1.1.69")
+		userAgent = "undici"
+		machineID = fp.MachineID
+		machineToken = fp.MachineToken
+		machineType = fp.MachineType
+		scene = orDefault(fp.Scene, "app")
+		product = orDefault(fp.Product, "app")
+		dataPolicy = orDefault(fp.DataPolicy, "agree")
+		clientIP = orDefault(fp.ClientIP, fp.MachineID)
+	}
+
 	h := map[string]string{
-		"cosy-data-policy":      "agree",
+		"cosy-data-policy":      dataPolicy,
 		"content-type":          "application/json",
-		"cosy-machinetype":      c.sess.MachineType,
-		"cosy-clienttype":       "5",
+		"cosy-machinetype":      machineType,
+		"cosy-clienttype":       clientType,
 		"cosy-date":             date,
 		"cosy-user":             c.sess.Identity.Uid,
 		"cosy-key":              c.sess.CosyKey,
 		"cache-control":         "no-cache",
 		"accept":                accept,
 		"authorization":         bearer,
-		"cosy-version":          cosy.Version,
-		"cosy-machineid":        c.sess.MachineId,
-		"cosy-machinetoken":     c.sess.MachineToken,
+		"cosy-version":          version,
+		"cosy-machineid":        machineID,
+		"cosy-machinetoken":     machineToken,
 		"login-version":         "v2",
-		"user-agent":            "Go-http-client/2.0",
-		"cosy-scene":            "assistant",
-		"cosy-business-product": "ide",
+		"user-agent":            userAgent,
+		"cosy-scene":            scene,
+		"cosy-business-product": product,
 		"cosy-business-type":    "agent",
+	}
+	if clientIP != "" {
+		h["cosy-clientip"] = clientIP
+	}
+	if c.fp != nil && c.fp.MachineCode != "" {
+		h["cosy-machinecode"] = c.fp.MachineCode
 	}
 	for k, v := range extra {
 		h[k] = v
 	}
 	return h, nil
+}
+
+func orDefault(v, def string) string {
+	if v == "" {
+		return def
+	}
+	return v
 }
 
 func PathSigFrom(rawURL string) (string, error) {

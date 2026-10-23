@@ -57,6 +57,7 @@ func templateMessages() []interface{} {
 type cachedBridge struct {
 	b      *bridge.Bridge
 	secret string
+	fpKey  string
 }
 
 var (
@@ -65,20 +66,26 @@ var (
 )
 
 func bridgeForAuth(sa *storedAuth) (*bridge.Bridge, error) {
-	key := authIDFor(sa)
+	key := authIDFor(sa) + "|" + string(sa.region())
+	fp := sa.Fingerprint.toAccountFingerprint()
+	fpKey := fingerprintCacheKey(fp)
 	bridgeMu.Lock()
-	if c, ok := bridgeCache[key]; ok && c.secret == sa.Secret {
+	if c, ok := bridgeCache[key]; ok && c.secret == sa.Secret && c.fpKey == fpKey {
 		bridgeMu.Unlock()
 		return c.b, nil
 	}
 	bridgeMu.Unlock()
 
-	b, err := bridge.NewBridge(sa.Secret, sa.region(), qoderTemplate())
+	// A real device fingerprint switches this account to the modern inference
+	// protocol, which is what makes model/list return Sonus/Cantus/Fast and
+	// lets those models pass the upstream device check. Accounts without one
+	// keep the legacy protocol unchanged.
+	b, err := bridge.NewBridgeWithFP(sa.Secret, sa.region(), qoderTemplate(), fp)
 	if err != nil {
 		return nil, err
 	}
 	bridgeMu.Lock()
-	bridgeCache[key] = &cachedBridge{b: b, secret: sa.Secret}
+	bridgeCache[key] = &cachedBridge{b: b, secret: sa.Secret, fpKey: fpKey}
 	bridgeMu.Unlock()
 	return b, nil
 }

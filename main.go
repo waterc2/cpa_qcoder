@@ -130,6 +130,9 @@ func main() {
 	// 每日 10:00 自动签到调度（需在控制台手动开启，默认关闭）
 	StartCheckinScheduler()
 
+	// token 自动续期调度（默认关闭；开启后每 15 天用 refresh_token 换新 token）
+	StartRefreshScheduler()
+
 	// 启动时尽量自动拉起 Bridge：优先激活账号，否则尝试任意有 secret 的账号
 	if err := svc.EnsureBridgeRunning(); err != nil {
 		logger.Error("auto start bridge failed: %v", err)
@@ -166,6 +169,8 @@ func main() {
 	mux.HandleFunc("/api/bridge/start", handleStartBridge)
 	mux.HandleFunc("/api/bridge/stop", handleStopBridge)
 	mux.HandleFunc("/api/checkin", handleCheckin)
+	mux.HandleFunc("/api/refresh", handleRefreshStatus)
+	mux.HandleFunc("/api/refresh/run", handleRefreshRun)
 	mux.Handle("/", http.FileServer(http.FS(sub)))
 
 	addr := fmt.Sprintf("%s:%d", *bind, *webPort)
@@ -480,6 +485,7 @@ func handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 		AutoStart        *bool    `json:"auto_start"`
 		AutoCheckin      *bool    `json:"auto_checkin"`
 		AutoCheckinTimes []string `json:"auto_checkin_times"`
+		AutoRefreshToken *bool    `json:"auto_refresh_token"`
 		ConsolePassword  *string  `json:"console_password"`
 		// 新格式：包含旧密码和新密码
 		ConsolePasswordNew *struct {
@@ -519,6 +525,10 @@ func handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 	if req.AutoCheckin != nil {
 		cur.AutoCheckin = *req.AutoCheckin
 		logger.Info("auto checkin set to %v", cur.AutoCheckin)
+	}
+	if req.AutoRefreshToken != nil {
+		cur.AutoRefreshToken = *req.AutoRefreshToken
+		logger.Info("auto refresh token set to %v", cur.AutoRefreshToken)
 	}
 	if req.AutoCheckinTimes != nil {
 		var times []string

@@ -112,6 +112,13 @@ func tokenPrefix(s string, n int) string {
 //  1. OAuth device token (dt-xxx): 直接使用，调用 /api/v1/userinfo 获取用户信息
 //  2. Personal Access Token (PAT): 调用 ExchangeJobToken 转换为 session token
 func NewBridge(pat string, region account.Region, templateBase map[string]interface{}) (*Bridge, error) {
+	return NewBridgeWithFP(pat, region, templateBase, nil)
+}
+
+// NewBridgeWithFP 与 NewBridge 相同，但可传入账号级真实设备指纹；
+// fp 非空时该账号使用新版推理协议（model/list 才会额外下发
+// fast / smodel(Sonus) / cmodel(Cantus)，且推理能通过设备校验）。
+func NewBridgeWithFP(pat string, region account.Region, templateBase map[string]interface{}, fp *account.CheckinFingerprint) (*Bridge, error) {
 	logger.Info("Bridge using token: %s (prefix: %s)", tokenPrefix(pat, 10), tokenPrefix(pat, 4))
 
 	var identity cosy.AuthIdentity
@@ -168,7 +175,14 @@ func NewBridge(pat string, region account.Region, templateBase map[string]interf
 	if err != nil {
 		return nil, err
 	}
-	client := NewBearerClient(sess)
+	var client *BearerClient
+	if fp != nil && fp.MachineToken != "" {
+		// 真实指纹：走新版协议；COSY 会话本身仍用派生身份签名
+		client = NewBearerClientWithFP(sess, fp)
+		logger.Info("Bridge modern protocol enabled (clienttype=%s version=%s)", orDefault(fp.ClientType, "10"), orDefault(fp.Version, "1.1.69"))
+	} else {
+		client = NewBearerClient(sess)
+	}
 
 	return &Bridge{
 		sess:         sess,

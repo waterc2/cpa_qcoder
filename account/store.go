@@ -53,6 +53,9 @@ func Delete(id string) error {
 	return os.Remove(filepath.Join(d, SanitizeID(id)+".json"))
 }
 
+// SetActive 把指定账号设为其所在区域的「启用账号」。
+// Active 按 region 隔离：同一 region 内只有一个账号可为启用，不同 region
+// （cn / global）彼此独立——单控制台双桥下两区可各有一个启用账号。
 func SetActive(id string) error {
 	mu.Lock()
 	defer mu.Unlock()
@@ -64,13 +67,44 @@ func SetActive(id string) error {
 	if err != nil {
 		return err
 	}
+	// 目标账号所属区域（空值归一化为 global）
+	targetRegion := RegionGlobal
+	found := false
 	for i := range accounts {
-		accounts[i].Active = accounts[i].ID == id
+		if accounts[i].ID == id {
+			targetRegion = NormalizeRegion(string(accounts[i].Region))
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("account not found: %s", id)
+	}
+	for i := range accounts {
+		// 只改同 region 的账号，其他 region 的启用状态保持不变
+		if NormalizeRegion(string(accounts[i].Region)) == targetRegion {
+			accounts[i].Active = accounts[i].ID == id
+		}
 		if err := saveUnlocked(d, &accounts[i]); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// GetActiveByRegion 返回指定区域的启用账号；该区域没有则返回 nil。
+func GetActiveByRegion(region Region) (*Account, error) {
+	accounts, err := List()
+	if err != nil {
+		return nil, err
+	}
+	want := NormalizeRegion(string(region))
+	for i := range accounts {
+		if accounts[i].Active && NormalizeRegion(string(accounts[i].Region)) == want {
+			return &accounts[i], nil
+		}
+	}
+	return nil, nil
 }
 
 func GetActive() (*Account, error) {

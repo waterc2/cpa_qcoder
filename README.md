@@ -15,6 +15,10 @@
 - 模型列表（静态 + 按账号动态）、模型开关
 - OpenAI `chat/completions`（流式 / 非流式）
 - 额度查询（含专属资源包）、每日签到（手动 + 定时）
+- **新版推理协议**：账号配置真实 `checkin_fingerprint` 后，`model/list` 额外解锁
+  Sonus（`smodel`）/ Cantus（`cmodel`）/ Fast（`fast`）；未配置的账号保持旧协议
+- 上游 `RESOURCE_LIMIT`、排队（`10605 isQueued`）等错误返回可读原因
+- Token 续期沿用宿主的 `auth.refresh` 定时回调（OAuth 每 24 小时检查）
 - 内嵌管理面板
 
 ## 构建
@@ -22,14 +26,14 @@
 需要 Go（cgo）和 C 工具链：
 
 ```bash
-scripts/build-cpa-plugin.sh 0.1.0
-# -> dist/qoder-v0.1.0.so (+ .h)
+scripts/build-cpa-plugin.sh 0.1.1
+# -> dist/qoder-v0.1.1.so (+ .h)
 ```
 
 ## 安装
 
 ```bash
-cp dist/qoder-v0.1.0.so /path/to/cli-proxy-api/plugins/linux/amd64/
+cp dist/qoder-v0.1.1.so /path/to/cli-proxy-api/plugins/linux/amd64/
 ```
 
 在 `config.yaml` 里启用：
@@ -92,6 +96,36 @@ OAuth 凭证也可直接导入：
 签到走 `campaigns` 流程，支持手动/定时、本地连续天数统计。国际版账号可能需要在
 auth 文件里提供官方客户端的 `checkin_fingerprint`；国内账号则**不能**发送自造指纹。
 
+### 新版推理协议（Sonus / Cantus / Fast）
+
+上游按 `(cosy-clienttype, cosy-version)` 下发模型清单。插件在账号 auth 文件里读到
+真实设备指纹后，会把该账号切到官方桌面端同款的新版协议；没有指纹的账号继续走旧协议，
+行为不变。
+
+```json
+{
+  "type": "qoder",
+  "secret": "dt-...",
+  "region": "global",
+  "checkin_fingerprint": {
+    "machine_id": "抓包得到的 UUID",
+    "machine_token": "与 machine_id 相同",
+    "machine_type": "5",
+    "client_ip": "抓包得到的 UUID",
+    "client_type": "10",
+    "version": "1.1.69",
+    "scene": "app",
+    "product": "app",
+    "data_policy": "agree"
+  }
+}
+```
+
+`machine_token` 是切换开关；只填 `machine_id` 不会改变协议。指纹必须来自官方客户端
+抓包，自造值会被上游以 `RESOURCE_LIMIT` 拒绝。切换后 `model/list` 会从 13 个模型
+增加到 15 个，新增 Sonus / Cantus / Fast。Sonus 倍率为 8，热门时段返回
+`10605 isQueued` 属正常容量排队，换模型或稍后重试即可。
+
 ## 数据布局
 
 | 路径 | 内容 |
@@ -126,8 +160,11 @@ cmd/cpa-plugin/
 
 ## 上游同步
 
-- 2026-10-20：合并 [qoder2api](https://github.com/Zhengyuuuui/qoder2api)
-  `4789816..8e02f24`，含专属资源包（活动积分）额度解析、账号签到灰度差异与
-  模型清单快照。细节见 [docs/upstream-notes.md](docs/upstream-notes.md)。
+- 2026-10-23：合并 [qoder2api](https://github.com/Zhengyuuuui/qoder2api)
+  `8e02f24..2671a21`，含新版推理协议（Sonus/Cantus/Fast）、Token 自动续期、
+  `RESOURCE_LIMIT` 友好错误与注册研究文档。插件侧已把 `checkin_fingerprint`
+  接入 `NewBridgeWithFP`，并在配置指纹时补充 Sonus/Cantus/Fast 的静态回退清单。
+- 2026-10-20：合并 `4789816..8e02f24`，含专属资源包（活动积分）额度解析、
+  账号签到灰度差异与模型清单快照。细节见 [docs/upstream-notes.md](docs/upstream-notes.md)。
 - 2026-10-20：回退模型清单同步到上游快照（`mmodel` 更名、价格/推理标记/上下文），
   并把 CLIProxyAPI SDK 从 v8.0.32 升到 v8.0.35（与当前宿主一致）。

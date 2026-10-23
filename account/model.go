@@ -25,15 +25,33 @@ type Account struct {
 	CheckinFingerprint *CheckinFingerprint `json:"checkin_fingerprint,omitempty"`
 }
 
-// CheckinFingerprint 官方客户端签到请求携带的 cosy 设备指纹。
+// CheckinFingerprint 账号级「真实设备指纹」。
+//
+// 用途一：国际版（qoder.com）每日签到需要真实 cosy 设备身份，缺了指纹服务端
+// 不下发 CLAIM_BENEFIT 活动。
+//
+// 用途二：启用新版推理协议。实测（2026-10-23）上游按
+// (cosy-clienttype, cosy-version) 决定 model/list 下发范围——旧值
+// （5 / 1.0.10）只给 12~13 个模型，换成官方桌面端同款的 10 / 1.1.69 后才会
+// 额外下发 fast / smodel(Sonus) / cmodel(Cantus)。但推理侧会校验真实设备
+// 指纹，自造值会被拒（RESOURCE_LIMIT）。因此配置了指纹的账号走新版协议，
+// 未配置的账号保持旧协议不变。
+//
+// 新版指纹形态（客户端 0.4.8+）：machineId = machineToken = clientIp 为同一
+// UUID，machineType 为 "5"。从官方客户端抓包获取，同一账号多次请求稳定。
 type CheckinFingerprint struct {
 	MachineID    string `json:"machine_id"`
 	MachineToken string `json:"machine_token"`
 	MachineType  string `json:"machine_type"`
-	MachineCode  string `json:"machine_code,omitempty"`
-	Hostname     string `json:"hostname,omitempty"`
+	ClientIP     string `json:"client_ip,omitempty"`
+	ClientType   string `json:"client_type,omitempty"`  // 空则默认 10
+	Version      string `json:"version,omitempty"`     // 空则默认 1.1.69
 	MachineOS    string `json:"machine_os,omitempty"`
-	Version      string `json:"version,omitempty"`
+	Hostname     string `json:"hostname,omitempty"`
+	Scene        string `json:"scene,omitempty"`       // 空则 app
+	Product      string `json:"product,omitempty"`     // 空则 app
+	DataPolicy   string `json:"data_policy,omitempty"` // 空则 agree
+	MachineCode  string `json:"machine_code,omitempty"`
 }
 
 type OAuthSession struct {
@@ -46,6 +64,13 @@ type Status struct {
 	Port          int    `json:"port"`
 	ActiveAccount string `json:"active_account"`
 	APIMode       string `json:"api_mode"`
+
+	// 按 region 的启用账号与运行状态（单控制台双桥）
+	CNActive       string `json:"cn_active,omitempty"`
+	CNActiveName   string `json:"cn_active_name,omitempty"`
+	GlobalActive   string `json:"global_active,omitempty"`
+	GlobalActiveName string `json:"global_active_name,omitempty"`
+	GlobalRunning  bool   `json:"global_running,omitempty"`
 }
 
 type Settings struct {
@@ -59,6 +84,7 @@ type Settings struct {
 	ModelMappings        map[string]map[string]string `json:"model_mappings,omitempty"`     // agent (claude/codex/gemini) → 客户端模型名 → Qoder model.key
 	AutoCheckin          bool                         `json:"auto_checkin"`                 // 自动签到开关（默认关闭）
 	AutoCheckinTimes     []string                     `json:"auto_checkin_times,omitempty"` // 自动签到时间点，HH:MM 列表，如 ["09:15","17:00"]；空=10:00
+	AutoRefreshToken     bool                         `json:"auto_refresh_token"`           // 自动续期 token 开关（默认关闭）；开启后每 15 天用 refresh_token 换新 token
 	MachineSalt          string                       `json:"machine_salt,omitempty"`       // 本机设备指纹盐（首次启动自动生成；勿修改，变更即指纹漂移）
 }
 

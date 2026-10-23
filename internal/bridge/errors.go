@@ -11,6 +11,7 @@ package bridge
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -25,6 +26,12 @@ const (
 	ErrTypeUpstream      = "upstream_error"
 	// ErrTypeNoAccount 账号池全部处于冷却（额度/频控/故障），请求无法分配账号。
 	ErrTypeNoAccount = "no_available_account"
+	// ErrTypeResourceLimit 上游账号资源/套餐限制：请求的模型不在账号可用范围
+	// （RESOURCE_LIMIT）。确定性拒绝，重试或换号都无效，需换模型或升级套餐。
+	ErrTypeResourceLimit = "resource_limit"
+	// ErrTypeUpstreamQueue 上游队列等待（isQueued=true 且 serviceAvailable=true）。
+	// 属可重试的拥塞，稍后重试可能成功。
+	ErrTypeUpstreamQueue = "upstream_queued"
 )
 
 // TransientMaxRetries 同账号瞬时故障额外重试次数（退避时长见 RetryBackoff）。
@@ -162,10 +169,129 @@ type UpstreamError struct {
 
 func (e *UpstreamError) Error() string { return e.Message }
 
+// ============================================================================
+// 上游三层嵌套错误解析（RESOURCE_LIMIT / 队列等待）
+//
+// Qoder 上游的业务错误是三层 JSON 套娃：
+//
+//	{"code":"403","message":"{\"code\":\"10605\",\"message\":
+//	  \"{\"isQueued\":true,\"modelKey\":\"qfmodel\",...\",\"subCode\":\"RESOURCE_LIMIT\"}"}
+//
+// 直接透传会给客户端一大段转义 JSON。这里解析出关键字段并生成可读消息。
+// ============================================================================
+
+// upstreamErrorDetail 上游业务错误的最内层字段。
+type upstreamErrorDetail struct {
+	IsQueued          bool   `json:"isQueued"`
+	ModelKey          string `json:"modelKey"`
+	QueueCount        int    `json:"queueCount"`
+	QueueType         string `json:"queueType"`
+	RetryAfterSeconds int    `json:"retryAfterSeconds"`
+	ServiceAvailable  bool   `json:"serviceAvailable"`
+	SubCode           string `json:"subCode"`
+	WaitTime          int    `json:"waitTime"`
+}
+
+// parseUpstreamNestedError 尝试解析三层嵌套的上游错误。
+// 返回 (detail, ok)：ok=false 表示不是该格式（或解析失败），调用方应走原逻辑。
+func parseUpstreamNestedError(detail string) (*upstreamErrorDetail, bool) {
+	detail = strings.TrimSpace(detail)
+	// 快速筛：必须同时含 subCode / RESOURCE_LIMIT 之类的关键字才尝试解析，
+	// 避免对每个错误都做三次 JSON 反序列化。
+	if !strings.Contains(detail, `"subCode"`) && !strings.Contains(detail, "RESOURCE_LIMIT") {
+		return nil, false
+	}
+	// detail 可能带 "upstream 403: " 之类前缀，从第一个 "{" 开始才是 JSON。
+	if idx := strings.IndexByte(detail, '{'); idx > 0 {
+		detail = detail[idx:]
+	}
+	// 外层：{"code":"403","message":"<json string>"}
+	var outer map[string]interface{}
+	if err := json.Unmarshal([]byte(detail), &outer); err != nil {
+		return nil, false
+	}
+	msg1, ok := outer["message"].(string)
+	if !ok {
+		return nil, false
+	}
+	// 中层：{"code":"10605","message":"<json string>","subCode":"..."}
+	var inner map[string]interface{}
+	if err := json.Unmarshal([]byte(msg1), &inner); err != nil {
+		return nil, false
+	}
+	msg2, ok := inner["message"].(string)
+	if !ok {
+		return nil, false
+	}
+	// 内层：业务字段
+	var d upstreamErrorDetail
+	if err := json.Unmarshal([]byte(msg2), &d); err != nil {
+		return nil, false
+	}
+	if d.SubCode == "" {
+		return nil, false
+	}
+	return &d, true
+}
+
+// resourceLimitMessage 把 RESOURCE_LIMIT / 队列等待错误转成对客户端可读的消息。
+// 返回 (message, errType, handled)。
+func resourceLimitMessage(d *upstreamErrorDetail) (string, string, bool) {
+	model := d.ModelKey
+	if model == "" {
+		model = "(未指明)"
+	}
+
+	switch {
+	// 服务端不可用（无论是否在队列）：账号无权使用该模型，确定性拒绝。
+	// 实测 isQueued=true 但 serviceAvailable=false 且 queueCount=0，
+	// 表示请求根本进不了队列——是权限/套餐问题，不是拥塞。
+	case !d.ServiceAvailable:
+		msg := fmt.Sprintf(
+			"模型 %s 对当前账号不可用（上游 RESOURCE_LIMIT）："+
+				"该模型可能不在账号套餐范围内、额度不足，或未覆盖到该账号。"+
+				"重试或切换到其他账号无效，请改用其他模型或在官方客户端确认账号权限。",
+			model)
+		return msg, ErrTypeResourceLimit, true
+
+	// 已进入队列：拥塞，稍后重试可能成功
+	case d.IsQueued && d.ServiceAvailable:
+		wait := d.WaitTime
+		if wait <= 0 {
+			wait = d.RetryAfterSeconds
+		}
+		if wait > 0 {
+			msg := fmt.Sprintf(
+				"模型 %s 当前排队中（队列类型 %s，等待约 %d 秒）："+
+					"上游资源紧张，请稍后重试；持续出现时可改用其他模型。",
+				model, d.QueueType, wait)
+			return msg, ErrTypeUpstreamQueue, true
+		}
+		msg := fmt.Sprintf(
+			"模型 %s 当前排队中（队列类型 %s）：上游资源紧张，请稍后重试。",
+			model, d.QueueType)
+		return msg, ErrTypeUpstreamQueue, true
+
+	// 其他组合：保守按资源限制处理
+	default:
+		msg := fmt.Sprintf(
+			"模型 %s 上游资源受限（RESOURCE_LIMIT，queueType=%s，serviceAvailable=%v）："+
+				"请稍后重试或改用其他模型。",
+			model, d.QueueType, d.ServiceAvailable)
+		return msg, ErrTypeResourceLimit, true
+	}
+}
+
 // FriendlyUpstreamError 把上游错误转成对客户端可读的消息；瞬时故障给出重试指引。
 // 返回 (message, errType)。与 hub friendly_upstream_error 逐句对齐。
 func FriendlyUpstreamError(code int, detail string) (string, string) {
 	detail = strings.TrimSpace(detail)
+	// 0) 上游业务错误（三层嵌套）：RESOURCE_LIMIT / 队列等待
+	if d, ok := parseUpstreamNestedError(detail); ok {
+		if msg, et, handled := resourceLimitMessage(d); handled {
+			return msg, et
+		}
+	}
 	// 1) 内容安全审核（确定性拒绝，先于瞬时判断——重试无效）
 	if IsContentPolicy(detail) {
 		return "上游内容安全审核未通过 (DataInspectionFailed)：输入可能含不当内容，" +
@@ -245,6 +371,12 @@ func ErrorStatus(err error) int {
 			return 400
 		case ErrTypeTransient:
 			return 502
+		case ErrTypeResourceLimit:
+			// 账号对模型无权限：确定性拒绝，映射 403 让客户端明确是权限/范围问题
+			return 403
+		case ErrTypeUpstreamQueue:
+			// 上游拥塞：映射 503，客户端应稍后重试
+			return 503
 		}
 		if ue.Status >= 400 && ue.Status <= 599 {
 			return ue.Status

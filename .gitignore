@@ -6,6 +6,7 @@ qoder2api
 webconsole/index.html.bak
 webconsole/index.html.bak2
 scripts/capture/
+node_modules/
 
 # CPA plugin build artifacts
 dist/

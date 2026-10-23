@@ -24,6 +24,8 @@ KEYWORDS = [
     # 国际版（qoder.com）签到体系
     "seat-activity", "credits-summary", "credits-heatmap", "limited-number",
     "consecutive", "streak",
+    # 模型列表 / 模型选择器
+    "model", "sonus", "cantus", "tier",
 ]
 
 _counter = {"n": 0}

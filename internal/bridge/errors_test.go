@@ -2,7 +2,9 @@ package bridge
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/url"
 	"strings"
 	"testing"
@@ -173,5 +175,120 @@ func TestRetryBackoffSchedule(t *testing.T) {
 	// 生产退避节奏：第 1 次 1s、第 2 次 2s（与 hub 一致）
 	if RetryBackoff(1).Seconds() != 1 || RetryBackoff(2).Seconds() != 2 {
 		t.Errorf("backoff schedule = %v, %v", RetryBackoff(1), RetryBackoff(2))
+	}
+}
+
+// nestedResourceLimitDetail 构造上游三层嵌套业务错误报文（RESOURCE_LIMIT）。
+//
+// 上游把业务错误嵌在 message 字段里，每嵌一层就做一次 JSON 字符串编码：
+//
+//	outer.message = json(mid)      // mid 的引号变成 \"
+//	mid.message   = json(inner)    // inner 的引号变成 \"
+//
+// 因此用 json.Marshal 逐层编码最可靠（避免手写转义出错）。
+func nestedResourceLimitDetail(serviceAvailable bool, queueCount int) string {
+	inner := fmt.Sprintf(
+		`{"isQueued":true,"modelKey":"qfmodel","queueCount":%d,`+
+			`"queueType":"p3","retryAfterSeconds":30,"serviceAvailable":%v,`+
+			`"subCode":"RESOURCE_LIMIT","waitTime":30}`,
+		queueCount, serviceAvailable)
+
+	mid := fmt.Sprintf(
+		`{"code":"10605","message":%s,"subCode":"RESOURCE_LIMIT"}`,
+		mustJSONString(inner))
+
+	outer := fmt.Sprintf(
+		`{"code":"403","message":%s}`,
+		mustJSONString(mid))
+
+	return "upstream 403: " + outer
+}
+
+// mustJSONString 把任意字符串编码成 JSON 字符串字面量（含两端双引号）。
+func mustJSONString(s string) string {
+	b, err := json.Marshal(s)
+	if err != nil {
+		panic(err)
+	}
+	return string(b)
+}
+
+func TestParseUpstreamNestedError_ResourceLimit(t *testing.T) {
+	detail := nestedResourceLimitDetail(false, 0)
+	d, ok := parseUpstreamNestedError(detail)
+	if !ok {
+		t.Fatalf("should parse nested RESOURCE_LIMIT error, detail=%s", detail)
+	}
+	if d.ModelKey != "qfmodel" {
+		t.Errorf("ModelKey = %q, want qfmodel", d.ModelKey)
+	}
+	if d.SubCode != "RESOURCE_LIMIT" {
+		t.Errorf("SubCode = %q, want RESOURCE_LIMIT", d.SubCode)
+	}
+	if d.ServiceAvailable {
+		t.Error("ServiceAvailable should be false")
+	}
+	if d.RetryAfterSeconds != 30 {
+		t.Errorf("RetryAfterSeconds = %d, want 30", d.RetryAfterSeconds)
+	}
+}
+
+func TestParseUpstreamNestedError_NotNested(t *testing.T) {
+	for _, detail := range []string{
+		"",
+		"upstream 500: internal error",
+		`{"code":"403","message":"forbidden"}`,
+		`{"error":"something else"}`,
+	} {
+		if _, ok := parseUpstreamNestedError(detail); ok {
+			t.Errorf("parseUpstreamNestedError(%q) should fail", detail)
+		}
+	}
+}
+
+func TestFriendlyUpstreamError_ResourceLimit(t *testing.T) {
+	// serviceAvailable=false：账号无权使用该模型（确定性拒绝）
+	detail := nestedResourceLimitDetail(false, 0)
+	msg, et := FriendlyUpstreamError(403, detail)
+	if et != ErrTypeResourceLimit {
+		t.Errorf("errType = %q, want %q", et, ErrTypeResourceLimit)
+	}
+	if !strings.Contains(msg, "qfmodel") {
+		t.Errorf("message should mention model key, got: %s", msg)
+	}
+	if !strings.Contains(msg, "不可用") {
+		t.Errorf("message should explain unavailability, got: %s", msg)
+	}
+	if got := ErrorStatus(NewUpstreamError(403, detail)); got != 403 {
+		t.Errorf("ErrorStatus = %d, want 403", got)
+	}
+}
+
+func TestFriendlyUpstreamError_UpstreamQueued(t *testing.T) {
+	// serviceAvailable=true：上游拥塞排队，稍后重试可能成功
+	detail := nestedResourceLimitDetail(true, 3)
+	msg, et := FriendlyUpstreamError(403, detail)
+	if et != ErrTypeUpstreamQueue {
+		t.Errorf("errType = %q, want %q", et, ErrTypeUpstreamQueue)
+	}
+	if !strings.Contains(msg, "排队") {
+		t.Errorf("message should mention queueing, got: %s", msg)
+	}
+	if !strings.Contains(msg, "30") {
+		t.Errorf("message should mention wait time, got: %s", msg)
+	}
+	if got := ErrorStatus(NewUpstreamError(403, detail)); got != 503 {
+		t.Errorf("ErrorStatus = %d, want 503", got)
+	}
+}
+
+func TestFriendlyUpstreamError_Plain403Unchanged(t *testing.T) {
+	// 普通 403 不走嵌套解析，保持原有行为
+	msg, et := FriendlyUpstreamError(403, "access denied")
+	if et != ErrTypeUpstream {
+		t.Errorf("errType = %q, want %q", et, ErrTypeUpstream)
+	}
+	if !strings.Contains(msg, "upstream 403") {
+		t.Errorf("message = %q, want upstream 403 prefix", msg)
 	}
 }
