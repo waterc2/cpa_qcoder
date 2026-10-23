@@ -22,7 +22,7 @@ OUT="dist/qoder-v${VERSION}.so"
 echo ">> building $OUT ($GOOS/$GOARCH, buildmode=c-shared)"
 CGO_ENABLED=1 GOOS="$GOOS" GOARCH="$GOARCH" \
   go build -buildmode=c-shared \
-  -ldflags "-X qoder2api/cmd/cpa-plugin.pluginVersion=${VERSION}" \
+  -ldflags "-X main.pluginVersion=${VERSION}" \
   -o "$OUT" ./cmd/cpa-plugin/
 
 echo ">> done: $OUT"
