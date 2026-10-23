@@ -289,6 +289,15 @@
     <section class="card grid-2">
       <div>
         <h3>模型</h3>
+        <div class="row" style="margin-bottom:10px; flex-wrap:wrap; gap:6px">
+          <label style="margin:0">Context 档位</label>
+          <select id="ctxTierGlobal" style="width:130px">
+            <option value="">上游默认</option>
+          </select>
+          <span class="muted" id="ctxTierHint">选择后对该实例所有模型生效</span>
+          <button class="secondary" id="ctxTierSave">保存</button>
+          <span class="msg" id="ctxTierMsg"></span>
+        </div>
         <div id="modelsBox">加载中...</div>
       </div>
       <div>
@@ -342,6 +351,22 @@
             <input id="oldPassword1" type="password" placeholder="输入旧密码 1/2" style="width: 140px; margin-right: 6px;" />
             <input id="oldPassword2" type="password" placeholder="输入旧密码 2/2" style="width: 140px; margin-right: 6px;" />
             <input id="newPassword" type="password" placeholder="新密码（可选）" style="width: 140px;" />
+          </div>
+        </div>
+
+        <div style="margin-top:12px">
+          <label>模型排队重试（上游 10605 isQueued 时，同账号等待重试；换号无益）</label>
+          <div class="row" style="gap:8px; flex-wrap:wrap; align-items:center">
+            <span style="font-size:12px">最多重试</span>
+            <input id="queueMaxRetriesInput" type="number" min="1" max="10" placeholder="2" style="width:70px" />
+            <span style="font-size:12px">次 · 单次等待上限</span>
+            <input id="queueWaitCapInput" type="number" min="1" max="300" placeholder="30" style="width:80px" />
+            <span style="font-size:12px">秒 · 默认等待</span>
+            <input id="queueWaitDefaultInput" type="number" min="1" max="300" placeholder="15" style="width:80px" />
+            <span style="font-size:12px">秒</span>
+          </div>
+          <div style="font-size:11px; color:var(--muted); margin-top:4px">
+            热门模型排队时在原账号等待后重试，撑到队列疏通常能成功；留空/0 = 用默认（2 次 / 30s / 15s）。
           </div>
         </div>
       </div>
@@ -400,6 +425,16 @@
       }
       if (document.activeElement !== $('bridgePortInput')) {
         $('bridgePortInput').value = port;
+      }
+      // 排队重试参数：留空/0 显示为默认值
+      if (document.activeElement !== $('queueMaxRetriesInput')) {
+        $('queueMaxRetriesInput').value = Number(settings.queue_max_retries) > 0 ? settings.queue_max_retries : 2;
+      }
+      if (document.activeElement !== $('queueWaitCapInput')) {
+        $('queueWaitCapInput').value = Number(settings.queue_wait_cap_sec) > 0 ? settings.queue_wait_cap_sec : 30;
+      }
+      if (document.activeElement !== $('queueWaitDefaultInput')) {
+        $('queueWaitDefaultInput').value = Number(settings.queue_wait_default_sec) > 0 ? settings.queue_wait_default_sec : 15;
       }
       const cfg = {
         name: 'QCCG / Qoder',
@@ -473,14 +508,18 @@
         return '<div class="muted">暂无模型</div>';
       }
       const rows = models.map(m => {
-        const ctx = (m.max_input_tokens || m.context_window) != null ? Number(m.max_input_tokens || m.context_window).toLocaleString() : '-';
+        const ctx = (m.context_window || m.max_input_tokens) != null ? Number(m.context_window || m.max_input_tokens).toLocaleString() : '-';
         const maxOut = m.max_output_tokens != null ? Number(m.max_output_tokens).toLocaleString() : '-';
         const name = m.display_name || m.id || m.key || '-';
         const key = m.id || m.key || '-';
+        const tiers = (m.context_tiers && m.context_tiers.length)
+          ? m.context_tiers.map(t => `${t.name}${t.is_default ? '*' : ''}`).join(' / ')
+          : '-';
         return `<tr>
           <td>${name}</td>
           <td>${key}</td>
           <td>${ctx}</td>
+          <td class="muted" style="font-size:11px">${tiers}</td>
           <td>${maxOut}</td>
           <td>${m.is_reasoning ? '✅' : ''}</td>
           <td>${m.enable === false ? '❌' : '✅'}</td>
@@ -492,13 +531,15 @@
             <th>模型</th>
             <th>Key</th>
             <th>上下文</th>
+            <th>可用档位</th>
             <th>最大输出</th>
             <th>推理</th>
             <th>启用</th>
           </tr>
         </thead>
         <tbody>${rows}</tbody>
-      </table>`;
+      </table>
+      <div class="muted" style="font-size:11px;margin-top:6px">* = 上游默认档位</div>`;
     }
 
     function fmtDur(ms) {
@@ -776,6 +817,8 @@
         const res = await api('/api/models');
         const models = Array.isArray(res) ? res : (res && res.data) || [];
         $('modelsBox').innerHTML = renderModelsTable(models);
+        renderCtxTierOptions(models);
+        loadCtxTier(models);
       } catch (e) {
         $('modelsBox').textContent = e.message;
       }
@@ -794,6 +837,62 @@
       if (!r.ok) location.replace('/login.html');
     }).catch(() => location.replace('/login.html'));
 
+    // ===== Context 档位 =====
+    let ctxTierCache = { options: [], default: '' };
+
+    function renderCtxTierOptions(models) {
+      const sel = $('ctxTierGlobal');
+      if (!sel) return;
+      // 收集所有模型出现过的档位名（按 token 数排序）
+      const seen = new Map();
+      (models || []).forEach(m => {
+        (m.context_tiers || []).forEach(t => {
+          if (!seen.has(t.name)) seen.set(t.name, t.tokens);
+        });
+      });
+      const opts = [...seen.entries()].sort((a, b) => a[1] - b[1]);
+      ctxTierCache.options = opts.map(([name]) => name);
+      const cur = ctxTierCache.default || '';
+      sel.innerHTML = '<option value="">上游默认</option>' +
+        opts.map(([name, tok]) =>
+          `<option value="${name}" ${name === cur ? 'selected' : ''}>${name} (${tok.toLocaleString()})</option>`
+        ).join('');
+    }
+
+    async function loadCtxTier(models) {
+      try {
+        const st = await api('/api/settings');
+        ctxTierCache.default = (st && st.context_tier_default) || '';
+        renderCtxTierOptions(models);
+        const hint = $('ctxTierHint');
+        if (hint) {
+          const ov = (st && st.context_tier_overrides) || {};
+          const n = Object.keys(ov).length;
+          hint.textContent = n ? `全局默认 + ${n} 个按模型覆盖` : '选择后对该实例所有模型生效';
+        }
+      } catch (e) {
+        // settings 可能未暴露这些字段（旧版本），忽略
+      }
+    }
+
+    async function saveCtxTier() {
+      const sel = $('ctxTierGlobal');
+      const val = sel ? sel.value : '';
+      try {
+        await api('/api/settings/save', {
+          method: 'POST',
+          body: JSON.stringify({ context_tier_default: val }),
+        });
+        ctxTierCache.default = val;
+        $('ctxTierMsg').className = 'msg ok';
+        $('ctxTierMsg').textContent = val ? `已设为 ${val}` : '已恢复上游默认';
+      } catch (e) {
+        $('ctxTierMsg').className = 'msg err';
+        $('ctxTierMsg').textContent = e.message;
+      }
+    }
+
+    $('ctxTierSave').onclick = saveCtxTier;
     $('refreshBtn').onclick = refresh;
 
     // ===== Token 续期按钮绑定 =====
@@ -906,6 +1005,13 @@
       $('connMsg').textContent = '保存中...';
       try {
         const body = { port, bridge_token };
+        // 排队重试参数：仅提交 >0 的值（留空/0 = 不改，沿用默认或已存值）
+        const qmr = Number($('queueMaxRetriesInput').value);
+        const qwc = Number($('queueWaitCapInput').value);
+        const qwd = Number($('queueWaitDefaultInput').value);
+        if (qmr > 0) body.queue_max_retries = qmr;
+        if (qwc > 0) body.queue_wait_cap_sec = qwc;
+        if (qwd > 0) body.queue_wait_default_sec = qwd;
         if (passwordData !== null) {
           // 根据类型决定使用哪个字段
           if (typeof passwordData === 'object') {

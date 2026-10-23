@@ -486,7 +486,15 @@ func handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 		AutoCheckin      *bool    `json:"auto_checkin"`
 		AutoCheckinTimes []string `json:"auto_checkin_times"`
 		AutoRefreshToken *bool    `json:"auto_refresh_token"`
-		ConsolePassword  *string  `json:"console_password"`
+		// 档位字段用 map/string 单独处理（nil 与空串语义不同：
+		// nil=不修改，""=清空）
+		ContextTierDefault   *string           `json:"context_tier_default"`
+		ContextTierOverrides map[string]string `json:"context_tier_overrides"`
+		ConsolePassword      *string           `json:"console_password"`
+		// 模型排队重试参数（控制台可配，热更新生效）
+		QueueMaxRetries     *int `json:"queue_max_retries"`
+		QueueWaitCapSec     *int `json:"queue_wait_cap_sec"`
+		QueueWaitDefaultSec *int `json:"queue_wait_default_sec"`
 		// 新格式：包含旧密码和新密码
 		ConsolePasswordNew *struct {
 			OldPassword string  `json:"old_password"`
@@ -529,6 +537,49 @@ func handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 	if req.AutoRefreshToken != nil {
 		cur.AutoRefreshToken = *req.AutoRefreshToken
 		logger.Info("auto refresh token set to %v", cur.AutoRefreshToken)
+	}
+	if req.ContextTierDefault != nil {
+		cur.ContextTierDefault = strings.TrimSpace(*req.ContextTierDefault)
+		logger.Info("context tier default set to %q", cur.ContextTierDefault)
+	}
+	if req.ContextTierOverrides != nil {
+		over := map[string]string{}
+		for k, v := range req.ContextTierOverrides {
+			k = strings.TrimSpace(k)
+			v = strings.TrimSpace(v)
+			if k == "" || v == "" {
+				continue
+			}
+			over[k] = v
+		}
+		cur.ContextTierOverrides = over
+		logger.Info("context tier overrides set: %v", over)
+	}
+	if req.QueueMaxRetries != nil {
+		v := *req.QueueMaxRetries
+		if v < 1 || v > 10 {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("queue_max_retries 需在 1~10 之间"))
+			return
+		}
+		cur.QueueMaxRetries = v
+	}
+	if req.QueueWaitCapSec != nil {
+		v := *req.QueueWaitCapSec
+		if v < 1 || v > 300 {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("queue_wait_cap_sec 需在 1~300 之间"))
+			return
+		}
+		cur.QueueWaitCapSec = v
+	}
+	if req.QueueWaitDefaultSec != nil {
+		v := *req.QueueWaitDefaultSec
+		if v < 1 || v > 300 {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("queue_wait_default_sec 需在 1~300 之间"))
+			return
+		}
+		cur.QueueWaitDefaultSec = v
+		logger.Info("queue retry set: maxRetries=%d waitCap=%ds waitDefault=%ds",
+			cur.QueueMaxRetries, cur.QueueWaitCapSec, cur.QueueWaitDefaultSec)
 	}
 	if req.AutoCheckinTimes != nil {
 		var times []string
@@ -585,6 +636,8 @@ func handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	// 排队重试参数热更新（无需重启）
+	svc.ApplyQueueSettings(cur.QueueMaxRetries, cur.QueueWaitCapSec, cur.QueueWaitDefaultSec)
 	safe := *cur
 	safe.ConsolePassword = ""
 	writeJSON(w, http.StatusOK, map[string]interface{}{

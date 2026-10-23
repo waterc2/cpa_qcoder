@@ -26,6 +26,8 @@ type QoderModel struct {
 	MaxOutputTokens int     `json:"max_output_tokens,omitempty"`
 	MaxInputTokens  int     `json:"max_input_tokens,omitempty"`
 	PriceFactor     float64 `json:"price_factor,omitempty"`
+	// ContextTiers 上游 context_config 的全部档位（如 200K/400K/1M）。
+	ContextTiers []bridge.ContextTier `json:"context_tiers,omitempty"`
 }
 
 type Service struct {
@@ -55,6 +57,13 @@ func (s *Service) LoadRuntimeSettings() {
 		s.bridgePort = settings.Port
 	}
 	s.bridgeToken = settings.BridgeToken
+	// 排队重试参数（控制台可配）：启动时应用，保存设置时再由 handleSaveSettings 热更新
+	bridge.ApplyQueueSettings(settings.QueueMaxRetries, settings.QueueWaitCapSec, settings.QueueWaitDefaultSec)
+}
+
+// ApplyQueueSettings 热更新模型排队重试参数（控制台保存设置后调用，即时生效）。
+func (s *Service) ApplyQueueSettings(maxRetries, waitCapSec, waitDefaultSec int) {
+	bridge.ApplyQueueSettings(maxRetries, waitCapSec, waitDefaultSec)
 }
 
 func (s *Service) EffectiveToken() string {
@@ -497,6 +506,7 @@ func (s *Service) ListQoderModels() ([]QoderModel, error) {
 			PriceFactor:     m.PriceFactor,
 			ContextWindow:   m.ContextWindow,
 			MaxOutputTokens: m.MaxOutputTokens,
+			ContextTiers:    m.ContextTiers,
 		}
 	}
 	return out, nil

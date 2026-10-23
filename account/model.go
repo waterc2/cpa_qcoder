@@ -44,7 +44,7 @@ type CheckinFingerprint struct {
 	MachineToken string `json:"machine_token"`
 	MachineType  string `json:"machine_type"`
 	ClientIP     string `json:"client_ip,omitempty"`
-	ClientType   string `json:"client_type,omitempty"`  // 空则默认 10
+	ClientType   string `json:"client_type,omitempty"` // 空则默认 10
 	Version      string `json:"version,omitempty"`     // 空则默认 1.1.69
 	MachineOS    string `json:"machine_os,omitempty"`
 	Hostname     string `json:"hostname,omitempty"`
@@ -66,26 +66,31 @@ type Status struct {
 	APIMode       string `json:"api_mode"`
 
 	// 按 region 的启用账号与运行状态（单控制台双桥）
-	CNActive       string `json:"cn_active,omitempty"`
-	CNActiveName   string `json:"cn_active_name,omitempty"`
-	GlobalActive   string `json:"global_active,omitempty"`
+	CNActive         string `json:"cn_active,omitempty"`
+	CNActiveName     string `json:"cn_active_name,omitempty"`
+	GlobalActive     string `json:"global_active,omitempty"`
 	GlobalActiveName string `json:"global_active_name,omitempty"`
-	GlobalRunning  bool   `json:"global_running,omitempty"`
+	GlobalRunning    bool   `json:"global_running,omitempty"`
 }
 
 type Settings struct {
 	Port                 int                          `json:"port"`
 	AutoStart            bool                         `json:"auto_start"`
-	LogLevel             string                       `json:"log_level"`                    // "info" | "debug" | "error"
-	QuotaRefreshInterval int                          `json:"quota_refresh_interval"`       // 秒，0=不自动刷新
-	BridgeToken          string                       `json:"bridge_token,omitempty"`       // 自定义鉴权 token，空则使用默认值 "qccg"
-	ConsolePassword      string                       `json:"console_password,omitempty"`   // Web 控制台登录密码（类似 CPA management key）
-	ModelMapping         map[string]string            `json:"model_mapping,omitempty"`      // [DEPRECATED] 旧扁平映射（向后兼容，MapModel 中作为兜底回退使用）
-	ModelMappings        map[string]map[string]string `json:"model_mappings,omitempty"`     // agent (claude/codex/gemini) → 客户端模型名 → Qoder model.key
-	AutoCheckin          bool                         `json:"auto_checkin"`                 // 自动签到开关（默认关闭）
-	AutoCheckinTimes     []string                     `json:"auto_checkin_times,omitempty"` // 自动签到时间点，HH:MM 列表，如 ["09:15","17:00"]；空=10:00
-	AutoRefreshToken     bool                         `json:"auto_refresh_token"`           // 自动续期 token 开关（默认关闭）；开启后每 15 天用 refresh_token 换新 token
-	MachineSalt          string                       `json:"machine_salt,omitempty"`       // 本机设备指纹盐（首次启动自动生成；勿修改，变更即指纹漂移）
+	LogLevel             string                       `json:"log_level"`                        // "info" | "debug" | "error"
+	QuotaRefreshInterval int                          `json:"quota_refresh_interval"`           // 秒，0=不自动刷新
+	BridgeToken          string                       `json:"bridge_token,omitempty"`           // 自定义鉴权 token，空则使用默认值 "qccg"
+	ConsolePassword      string                       `json:"console_password,omitempty"`       // Web 控制台登录密码（类似 CPA management key）
+	ModelMapping         map[string]string            `json:"model_mapping,omitempty"`          // [DEPRECATED] 旧扁平映射（向后兼容，MapModel 中作为兜底回退使用）
+	ModelMappings        map[string]map[string]string `json:"model_mappings,omitempty"`         // agent (claude/codex/gemini) → 客户端模型名 → Qoder model.key
+	AutoCheckin          bool                         `json:"auto_checkin"`                     // 自动签到开关（默认关闭）
+	AutoCheckinTimes     []string                     `json:"auto_checkin_times,omitempty"`     // 自动签到时间点，HH:MM 列表，如 ["09:15","17:00"]；空=10:00
+	AutoRefreshToken     bool                         `json:"auto_refresh_token"`               // 自动续期 token 开关（默认关闭）；开启后每 15 天用 refresh_token 换新 token
+	ContextTierDefault   string                       `json:"context_tier_default,omitempty"`   // 全局默认 context 档位名（如 "400K"）；空=用上游默认档
+	ContextTierOverrides map[string]string            `json:"context_tier_overrides,omitempty"` // 按模型 key 覆盖档位：model_key -> 档位名
+	MachineSalt          string                       `json:"machine_salt,omitempty"`           // 本机设备指纹盐（首次启动自动生成；勿修改，变更即指纹漂移）
+	QueueMaxRetries      int                          `json:"queue_max_retries,omitempty"`      // 模型排队（上游 10605 isQueued）同账号最多重试次数；≤0 用默认 2，范围 1~10
+	QueueWaitCapSec      int                          `json:"queue_wait_cap_sec,omitempty"`     // 单次排队等待上限（秒）；≤0 用默认 30，范围 1~300
+	QueueWaitDefaultSec  int                          `json:"queue_wait_default_sec,omitempty"` // 上游未给 retryAfter 时的默认等待（秒）；≤0 用默认 15，范围 1~300
 }
 
 type QuotaInfo struct {

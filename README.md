@@ -161,6 +161,13 @@ cmd/cpa-plugin/
 ## 上游同步
 
 - 2026-10-23：合并 [qoder2api](https://github.com/Zhengyuuuui/qoder2api)
+  `2671a21..62facdb`，含 **context 多档位（200K / 400K / 1M）** 与排队重试补全
+  （`errors.go`/`pool.go`）。档位可经 `context_tier_default` / `context_tier_overrides`
+  配置，按模型目录 5 分钟缓存解析为 token 数后写入 `model_config.max_input_tokens`
+  （上游标注：该传递字段未实测验证）。插件侧保留本地 `AvailableCredits` 汇总与
+  reasoning_effort / thinking_budget 透传，无行为冲突。
+
+- 2026-10-23：合并 [qoder2api](https://github.com/Zhengyuuuui/qoder2api)
   `8e02f24..2671a21`，含新版推理协议（Sonus/Cantus/Fast）、Token 自动续期、
   `RESOURCE_LIMIT` 友好错误与注册研究文档。插件侧已把 `checkin_fingerprint`
   接入 `NewBridgeWithFP`，并在配置指纹时补充 Sonus/Cantus/Fast 的静态回退清单。

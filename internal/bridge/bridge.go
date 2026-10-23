@@ -10,6 +10,7 @@ import (
 	"qoder2api/internal/cosy"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"qoder2api/account"
@@ -83,6 +84,11 @@ type Bridge struct {
 	chatStreamURL string
 	// email 是解析到的账号邮箱（用于插件侧 auth 标签），可能为空。
 	email string
+
+	// 模型目录缓存（context 档位解析用）
+	catalogCacheMu sync.Mutex
+	catalogCache   []QoderModel
+	catalogCacheAt time.Time
 }
 
 // QoderModel 是返回给前端的精简模型条目（仅保留下拉选择必要字段）
@@ -96,6 +102,17 @@ type QoderModel struct {
 	MaxOutputTokens int     `json:"max_output_tokens,omitempty"`
 	MaxInputTokens  int     `json:"max_input_tokens,omitempty"`
 	PriceFactor     float64 `json:"price_factor,omitempty"`
+	// ContextTiers 上游 context_config 的全部档位（如 200K/400K/1M）。
+	// 上游按模型提供多档 context，App 端可切换；此前只取 is_default 档，
+	// 导致大 context 档位丢失。
+	ContextTiers []ContextTier `json:"context_tiers,omitempty"`
+}
+
+// ContextTier 单个 context 档位。
+type ContextTier struct {
+	Name      string `json:"name"`       // 档位名，如 "200K" / "400K" / "1M"
+	Tokens    int    `json:"tokens"`     // token 数
+	IsDefault bool   `json:"is_default"` // 是否上游默认档
 }
 
 // tokenPrefix 安全截取 token 前 n 字节用于日志展示（不足 n 返回全串）。
@@ -275,33 +292,37 @@ func extractModels(rawList []interface{}) []QoderModel {
 			PriceFactor:    cosy.FloatVal(m, "price_factor"),
 		}
 		if cc, ok := m["context_config"].(map[string]interface{}); ok {
-			var defaultCfg map[string]interface{}
-			for _, cfg := range cc {
+			// 保留全部档位（上游按模型提供 200K/400K/1M 等多档）
+			for tierName, cfg := range cc {
 				cfgMap, _ := cfg.(map[string]interface{})
 				if cfgMap == nil {
 					continue
 				}
+				tokens := int(cosy.FloatVal(cfgMap, "token_count"))
+				if tokens <= 0 {
+					continue
+				}
 				isDefault, _ := cfgMap["is_default"].(bool)
-				if isDefault {
-					defaultCfg = cfgMap
+				model.ContextTiers = append(model.ContextTiers, ContextTier{
+					Name:      tierName,
+					Tokens:    tokens,
+					IsDefault: isDefault,
+				})
+			}
+			// 按 token 数升序，展示与选择更直观
+			sort.Slice(model.ContextTiers, func(i, j int) bool {
+				return model.ContextTiers[i].Tokens < model.ContextTiers[j].Tokens
+			})
+			// 默认 context_window 仍取上游默认档（无默认档时取最大档）
+			for _, t := range model.ContextTiers {
+				if t.IsDefault {
+					model.ContextWindow = t.Tokens
 					break
 				}
 			}
-			if defaultCfg == nil {
-				for _, cfg := range cc {
-					cfgMap, _ := cfg.(map[string]interface{})
-					if cfgMap != nil {
-						defaultCfg = cfgMap
-						break
-					}
-				}
+			if model.ContextWindow == 0 && len(model.ContextTiers) > 0 {
+				model.ContextWindow = model.ContextTiers[len(model.ContextTiers)-1].Tokens
 			}
-			if defaultCfg != nil {
-				model.ContextWindow = int(cosy.FloatVal(defaultCfg, "token_count"))
-			}
-		}
-		if model.ContextWindow == 0 {
-			model.ContextWindow = model.MaxInputTokens
 		}
 		if model.ContextWindow == 0 {
 			model.ContextWindow = model.MaxInputTokens
@@ -336,6 +357,14 @@ type CallOpts struct {
 	// SkipModelMap 跳过 MapModel。插件显式配置的模型映射名称已经解析成
 	// 上游 model.key，不能再被内置/用户映射二次改写。
 	SkipModelMap bool
+	// ContextTokens 指定的 context 档位 token 数（如 400000）。
+	// 0 表示使用上游默认档。非 0 时写入 model_config.max_input_tokens。
+	//
+	// ⚠️ 该字段的传递机制【未证实】：上游 model/list 返回 context_config
+	// 多档位（200K/400K/1M），但尚未抓到真实模型请求以确认 App 端
+	// 用哪个字段传递所选档位。当前按最可能的 max_input_tokens 实现，
+	// 需实测验证。
+	ContextTokens int
 }
 
 // validReasoningEfforts 是官方 CLI 接受的上游 reasoning_effort 取值。
@@ -417,6 +446,70 @@ func deltaDispatcher(onDelta func(Delta), upstreamErr *error) func(string) bool 
 	}
 }
 
+// resolveContextTokens 按 settings 配置解析指定模型的 context 档位 token 数。
+// 返回 0 表示使用上游默认档。
+//
+// 优先级：按模型覆盖 > 全局默认 > 0（上游默认）。
+func (b *Bridge) resolveContextTokens(model string) int {
+	settings, err := account.LoadSettings()
+	if err != nil || settings == nil {
+		return 0
+	}
+	tierName := ""
+	if settings.ContextTierOverrides != nil {
+		tierName = settings.ContextTierOverrides[model]
+	}
+	if tierName == "" {
+		tierName = settings.ContextTierDefault
+	}
+	if tierName == "" {
+		return 0
+	}
+
+	// 用模型目录把档位名换成 token 数
+	tokens := b.contextTierTokens(model, tierName)
+	if tokens == 0 {
+		// 目录里没有该档位（模型不支持）：回落到上游默认档
+		logger.Debug("context tier %q not available for model %s, using upstream default", tierName, model)
+		return 0
+	}
+	logger.Debug("context tier resolved: model=%s tier=%s tokens=%d", model, tierName, tokens)
+	return tokens
+}
+
+// contextTierTokens 从模型目录中查找指定档位的 token 数；找不到返回 0。
+// 目录带 5 分钟缓存，避免每次请求都打上游 model/list。
+func (b *Bridge) contextTierTokens(model, tierName string) int {
+	catalog := b.modelCatalog()
+	for _, m := range catalog {
+		if !strings.EqualFold(m.Key, model) {
+			continue
+		}
+		for _, t := range m.ContextTiers {
+			if strings.EqualFold(t.Name, tierName) {
+				return t.Tokens
+			}
+		}
+	}
+	return 0
+}
+
+// modelCatalog 返回模型目录（带 5 分钟缓存）。
+func (b *Bridge) modelCatalog() []QoderModel {
+	b.catalogCacheMu.Lock()
+	defer b.catalogCacheMu.Unlock()
+	if b.catalogCache != nil && time.Since(b.catalogCacheAt) < 5*time.Minute {
+		return b.catalogCache
+	}
+	models, err := b.ListAvailableModels()
+	if err != nil || len(models) == 0 {
+		return b.catalogCache // 失败时返回旧缓存（可能为 nil）
+	}
+	b.catalogCache = models
+	b.catalogCacheAt = time.Now()
+	return models
+}
+
 func (b *Bridge) CallQoderWithOpts(ctx context.Context, agent string, messages []interface{}, model string, tools interface{}, opts CallOpts, onDelta func(Delta)) error {
 	// 将客户端模型名（claude-sonnet-4-6 等）映射成 Qoder 上游内部 model.key（auto/qmodel_38max/gmodel/dmodel 等）。
 	// 上游对未知 key 会走兜底返回内容，但不会把这次调用计入 quota，这是「请求成功但 dashboard 无用量」的根因。
@@ -427,6 +520,13 @@ func (b *Bridge) CallQoderWithOpts(ctx context.Context, agent string, messages [
 	if model != originalModel {
 		logger.Debug("mapModel %s/%s -> %s", agent, originalModel, model)
 	}
+
+	// 解析 context 档位：opts 未指定时按 settings 的全局/按模型配置选取，
+	// 并用该账号的模型目录把档位名换成 token 数。
+	if opts.ContextTokens == 0 {
+		opts.ContextTokens = b.resolveContextTokens(model)
+	}
+
 	body := DeepCopyMap(b.templateBase)
 
 	body["stream"] = true
@@ -442,6 +542,14 @@ func (b *Bridge) CallQoderWithOpts(ctx context.Context, agent string, messages [
 	if opts.MaxTokens > 0 {
 		if params, ok := body["parameters"].(map[string]interface{}); ok {
 			params["max_tokens"] = opts.MaxTokens
+		}
+	}
+
+	// 应用 context 档位（见 CallOpts.ContextTokens 的未证实说明）
+	if opts.ContextTokens > 0 {
+		if mc, ok := body["model_config"].(map[string]interface{}); ok {
+			mc["max_input_tokens"] = opts.ContextTokens
+			logger.Debug("context tier applied: model=%s max_input_tokens=%d", model, opts.ContextTokens)
 		}
 	}
 
@@ -579,12 +687,43 @@ func (b *Bridge) CallQoderWithOpts(ctx context.Context, agent string, messages [
 	return lastErr
 }
 
-// streamWithSlot 在单个账号上执行「SSE 信封重试闸门」。
+// streamWithSlot 在单个账号上执行流式请求，含两层有界重试：
+//  1. 队列拥塞重试（本层）：上游 10605 isQueued 时，同账号等待 retryAfterSeconds
+//     后重试，最多 QueueMaxRetries 次。换号无益（同模型同队列），故不在此层换号。
+//  2. 瞬时故障重试（streamWithTransientRetry）：连接/418/5xx，最多 TransientMaxRetries 次。
+//
+// 返回是否已向 onDelta 发出过内容——上层据此决定能否换号（已发出内容则不能，
+// 否则客户端会收到重复内容）。
+func (b *Bridge) streamWithSlot(ctx context.Context, slot *Slot, qurl string, body map[string]interface{}, extra map[string]string, onDelta func(Delta)) (bool, error) {
+	queueTries := 0
+	for {
+		emitted, err := b.streamWithTransientRetry(ctx, slot, qurl, body, extra, onDelta)
+		if err == nil {
+			return emitted, nil
+		}
+		// 队列拥塞且尚未发出内容：同账号等待重试（不换号）。
+		// 假队列（queueCount=0 且 serviceAvailable=false）例外：那层重试只是
+		// 浪费时间，直接上抛给 streamWithQueueRecovery 立即换号。
+		if !emitted && isUpstreamQueue(err) && queueTries < QueueMaxRetries &&
+			queueWorthSameAccountRetry(err) {
+			queueTries++
+			wait := queueRetryAfter(err)
+			logger.Info("upstream queued (model congested), waiting %s before retry on same account (try %d/%d): %v",
+				wait, queueTries, QueueMaxRetries, err)
+			if serr := sleepCtx(ctx, wait); serr != nil {
+				return emitted, err // ctx 取消/超时：上抛最后一次错误
+			}
+			continue
+		}
+		return emitted, err
+	}
+}
+
+// streamWithTransientRetry 在单个账号上执行「SSE 信封重试闸门」。
 // 连接阶段错误已由 openStreamLines 内部重试；此处是第二层防护（有界：
 // 最多 TransientMaxRetries 次），主要覆盖上游 HTTP200 建流后才在信封里
-// 投递 418/5xx 的形态。返回是否已向 onDelta 发出过内容——上层据此决定
-// 能否换号（已发出内容则不能，否则客户端会收到重复内容）。
-func (b *Bridge) streamWithSlot(ctx context.Context, slot *Slot, qurl string, body map[string]interface{}, extra map[string]string, onDelta func(Delta)) (bool, error) {
+// 投递 418/5xx 的形态。返回是否已向 onDelta 发出过内容。
+func (b *Bridge) streamWithTransientRetry(ctx context.Context, slot *Slot, qurl string, body map[string]interface{}, extra map[string]string, onDelta func(Delta)) (bool, error) {
 	var lastErr error
 	emittedAny := false
 	for attempt := 0; attempt <= TransientMaxRetries; attempt++ {

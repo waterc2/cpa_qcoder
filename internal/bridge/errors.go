@@ -17,6 +17,8 @@ import (
 	"net"
 	"strings"
 	"time"
+
+	"qoder2api/logger"
 )
 
 // 错误类型（透传给客户端的 error.type 字段）
@@ -29,13 +31,58 @@ const (
 	// ErrTypeResourceLimit 上游账号资源/套餐限制：请求的模型不在账号可用范围
 	// （RESOURCE_LIMIT）。确定性拒绝，重试或换号都无效，需换模型或升级套餐。
 	ErrTypeResourceLimit = "resource_limit"
-	// ErrTypeUpstreamQueue 上游队列等待（isQueued=true 且 serviceAvailable=true）。
-	// 属可重试的拥塞，稍后重试可能成功。
+	// ErrTypeUpstreamQueue 上游队列拥塞（isQueued=true 或带 retryAfterSeconds）。
+	// 属可重试的拥塞：同账号等待重试可能成功，换号无益（同模型同队列）。
 	ErrTypeUpstreamQueue = "upstream_queued"
 )
 
 // TransientMaxRetries 同账号瞬时故障额外重试次数（退避时长见 RetryBackoff）。
 const TransientMaxRetries = 2
+
+// 队列拥塞重试参数：上游 10605 isQueued 时，同账号等待重试（换号无益）。
+// 单次等待取上游 retryAfterSeconds，夹在 [1s, QueueWaitCap]；最多 QueueMaxRetries 次。
+// 默认值见 Default*；运行时由 ApplyQueueSettings 按控制台 settings 覆盖。
+var (
+	QueueMaxRetries  = DefaultQueueMaxRetries
+	QueueWaitCap     = DefaultQueueWaitCapSec * time.Second
+	QueueWaitDefault = DefaultQueueWaitDefSec * time.Second
+)
+
+const (
+	DefaultQueueMaxRetries = 2  // 排队同账号最多重试次数
+	DefaultQueueWaitCapSec = 30 // 单次排队等待上限（秒）
+	DefaultQueueWaitDefSec = 15 // 上游未给 retryAfter 时的默认等待（秒）
+	maxQueueRetriesCeiling = 10 // 重试次数硬上限（防误配过长）
+	maxQueueWaitCeilingSec = 300
+)
+
+// ApplyQueueSettings 应用控制台配置的排队重试参数到包级变量（带默认值与夹取）。
+// 启动（LoadRuntimeSettings）与保存设置后各调用一次，使改动即时生效、无需重启。
+// 三个入参对应 settings 的 queue_max_retries / queue_wait_cap_sec / queue_wait_default_sec；
+// 每个 ≤0 时回退各自默认值（故无「禁用」语义，最小 1 次重试）。
+func ApplyQueueSettings(maxRetries, waitCapSec, waitDefaultSec int) {
+	if maxRetries <= 0 {
+		maxRetries = DefaultQueueMaxRetries
+	}
+	if maxRetries > maxQueueRetriesCeiling {
+		maxRetries = maxQueueRetriesCeiling
+	}
+	QueueMaxRetries = maxRetries
+	QueueWaitCap = clampQueueSeconds(waitCapSec, DefaultQueueWaitCapSec)
+	QueueWaitDefault = clampQueueSeconds(waitDefaultSec, DefaultQueueWaitDefSec)
+	logger.Info("queue retry applied: maxRetries=%d waitCap=%s waitDefault=%s",
+		QueueMaxRetries, QueueWaitCap, QueueWaitDefault)
+}
+
+func clampQueueSeconds(v, def int) time.Duration {
+	if v <= 0 {
+		v = def
+	}
+	if v > maxQueueWaitCeilingSec {
+		v = maxQueueWaitCeilingSec
+	}
+	return time.Duration(v) * time.Second
+}
 
 // ErrEmptyStream 上游建流成功（HTTP200）但未投递任何有效 delta/usage 帧即正常关流
 // （对齐 hub "empty upstream stream"）：按约定不重试，由 CallQoderWithOpts 直接上抛，
@@ -243,9 +290,26 @@ func resourceLimitMessage(d *upstreamErrorDetail) (string, string, bool) {
 	}
 
 	switch {
-	// 服务端不可用（无论是否在队列）：账号无权使用该模型，确定性拒绝。
-	// 实测 isQueued=true 但 serviceAvailable=false 且 queueCount=0，
-	// 表示请求根本进不了队列——是权限/套餐问题，不是拥塞。
+	// 已进入队列 / 上游明确要求稍后重试（isQueued 或给出 retryAfterSeconds）：
+	// 属拥塞，非权限。即便 serviceAvailable=false，只要在队列或带 retryAfterSeconds，
+	// 就按「排队」处理——换号无益（同模型同队列），应等待重试（见 streamWithSlot）。
+	case d.IsQueued || d.RetryAfterSeconds > 0:
+		wait := d.WaitTime
+		if wait <= 0 {
+			wait = d.RetryAfterSeconds
+		}
+		var b strings.Builder
+		fmt.Fprintf(&b, "模型 %s 当前使用人数较多，正在排队", model)
+		if d.QueueCount > 0 {
+			fmt.Fprintf(&b, "（前方约 %d 人）", d.QueueCount)
+		}
+		if wait > 0 {
+			fmt.Fprintf(&b, "，预计还需等待约 %d 秒", wait)
+		}
+		b.WriteString("：上游资源紧张，网关已自动等待重试；若仍未成功请稍后重试或改用其他模型。")
+		return b.String(), ErrTypeUpstreamQueue, true
+
+	// 未排队且服务不可用：账号无权使用该模型，确定性拒绝。
 	case !d.ServiceAvailable:
 		msg := fmt.Sprintf(
 			"模型 %s 对当前账号不可用（上游 RESOURCE_LIMIT）："+
@@ -253,24 +317,6 @@ func resourceLimitMessage(d *upstreamErrorDetail) (string, string, bool) {
 				"重试或切换到其他账号无效，请改用其他模型或在官方客户端确认账号权限。",
 			model)
 		return msg, ErrTypeResourceLimit, true
-
-	// 已进入队列：拥塞，稍后重试可能成功
-	case d.IsQueued && d.ServiceAvailable:
-		wait := d.WaitTime
-		if wait <= 0 {
-			wait = d.RetryAfterSeconds
-		}
-		if wait > 0 {
-			msg := fmt.Sprintf(
-				"模型 %s 当前排队中（队列类型 %s，等待约 %d 秒）："+
-					"上游资源紧张，请稍后重试；持续出现时可改用其他模型。",
-				model, d.QueueType, wait)
-			return msg, ErrTypeUpstreamQueue, true
-		}
-		msg := fmt.Sprintf(
-			"模型 %s 当前排队中（队列类型 %s）：上游资源紧张，请稍后重试。",
-			model, d.QueueType)
-		return msg, ErrTypeUpstreamQueue, true
 
 	// 其他组合：保守按资源限制处理
 	default:
@@ -280,6 +326,30 @@ func resourceLimitMessage(d *upstreamErrorDetail) (string, string, bool) {
 			model, d.QueueType, d.ServiceAvailable)
 		return msg, ErrTypeResourceLimit, true
 	}
+}
+
+// isUpstreamQueue 判定错误是否为上游队列拥塞（可等待重试、换号无益）。
+func isUpstreamQueue(err error) bool {
+	var ue *UpstreamError
+	return errors.As(err, &ue) && ue.ErrType == ErrTypeUpstreamQueue
+}
+
+// queueRetryAfter 从队列错误解析等待时长：优先上游 retryAfterSeconds，
+// 夹在 [1s, QueueWaitCap]；上游未给则用 QueueWaitDefault。
+func queueRetryAfter(err error) time.Duration {
+	var ue *UpstreamError
+	if errors.As(err, &ue) {
+		if d, ok := retryAfterFromDetail(ue.Detail); ok {
+			if d < time.Second {
+				return time.Second
+			}
+			if d > QueueWaitCap {
+				return QueueWaitCap
+			}
+			return d
+		}
+	}
+	return QueueWaitDefault
 }
 
 // FriendlyUpstreamError 把上游错误转成对客户端可读的消息；瞬时故障给出重试指引。

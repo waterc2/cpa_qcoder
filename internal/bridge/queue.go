@@ -321,6 +321,21 @@ func (b *Bridge) FinishQueue(slot *Slot, requestSetID, modelKey, userID string, 
 	return err
 }
 
+// queueWorthSameAccountRetry reports whether a queued signal looks like real
+// upstream congestion (queueCount>0 or the service reports itself available),
+// which is worth the bounded same-account retry inside streamWithSlot.
+// Fake/empty queue signals (queueCount=0 && serviceAvailable=false — an
+// upstream glitch) return false so the error bubbles straight to
+// streamWithQueueRecovery, which fails over to another account immediately
+// instead of burning the same-account retry budget on the same 403.
+func queueWorthSameAccountRetry(err error) bool {
+	qe := parseQueueError(err)
+	if qe == nil {
+		return true
+	}
+	return qe.QueueCount > 0 || qe.ServiceAvailable
+}
+
 // queueShouldFailoverImmediately decides whether a queue signal should be
 // returned to the caller instead of waiting. Qoder sometimes reports
 // queueCount=0 / serviceAvailable=false on submit while the status endpoint

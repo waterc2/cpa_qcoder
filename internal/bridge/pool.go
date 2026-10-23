@@ -277,6 +277,10 @@ func ShouldFailover(err error) bool {
 		if ue.ErrType == ErrTypeContentPolicy {
 			return false
 		}
+		// 排队拥塞（ErrTypeUpstreamQueue）不在此短路：同账号的等待重试已在
+		// streamWithSlot 内有界完成；若错误仍上抛到这层，说明是「假队列」或
+		// 单账号排队预算耗尽，应继续换号（见 streamWithQueueRecovery 与
+		// CallQoderWithOpts 的 PerAccountQueueWait 预算设计）。
 		switch ue.Status {
 		case http.StatusUnauthorized, http.StatusForbidden: // 额度 / 凭证
 			return true

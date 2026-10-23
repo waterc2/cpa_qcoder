@@ -321,11 +321,11 @@ func handleRefreshStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"enabled":         enabled,
-		"interval_days":   RefreshIntervalDays,
-		"window_days":     refreshWindowDays,
-		"reports":         reports,
-		"token_age_days":  ages,
+		"enabled":        enabled,
+		"interval_days":  RefreshIntervalDays,
+		"window_days":    refreshWindowDays,
+		"reports":        reports,
+		"token_age_days": ages,
 	})
 }
 
@@ -347,10 +347,10 @@ func handleRefreshRun(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"reports":  reports,
-		"renewed":  renewed,
-		"failed":   failed,
-		"total":    len(reports),
+		"reports":          reports,
+		"renewed":          renewed,
+		"failed":           failed,
+		"total":            len(reports),
 		"restart_required": renewed > 0,
 	})
 }
