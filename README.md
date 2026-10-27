@@ -160,6 +160,14 @@ cmd/cpa-plugin/
 
 ## 上游同步
 
+- 2026-10-26：合并 `62facdb..872d9b9`（纯文档/面板，无 Go 代码改动）。
+  上游刷新模型清单快照：`kmodel_latest` Kimi-K3 → **Kimi-K3.1-Pro**（key 不变，
+  倍率 1.4→1）、CN 移除 `qmodel`（11→10 个）、Global `gfmodel` max_output
+  16,384→32,768、CN `qmodel_38max` 倍率 0.2→0.5；`webconsole/index.html` 的
+  NewAPI 模型数组同步为当前 key。模型清单本就运行时从 `/algo/api/v2/model/list`
+  动态拉取，故本次不改代码；本地静态兜底表（`cmd/cpa-plugin/models.go`）仍是
+  2026-10-20 快照，仅在探测失败时使用，本次未同步（见下条待办）。
+
 - 2026-10-23：合并 [qoder2api](https://github.com/Zhengyuuuui/qoder2api)
   `2671a21..62facdb`，含 **context 多档位（200K / 400K / 1M）** 与排队重试补全
   （`errors.go`/`pool.go`）。档位可经 `context_tier_default` / `context_tier_overrides`
