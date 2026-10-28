@@ -6,8 +6,10 @@
 >
 > 部署总览见 `/home/brady/tool/README-cpa.md`。
 >
-> 最近执行：**2026-10-26**，合并上游 `62facdb..872d9b9`（纯文档/面板：模型清单
-> 2026-10-26 快照刷新，无 Go 代码改动 → 未重新构建，仍为 `qoder-v0.1.2.so`）。
+> 最近执行：**2026-10-27**，合并上游 `872d9b9..6cae517`（队列「首字前一直等」
+> 开关 + 最近排队等待记录）。上游改动与本地语义 #2 直接冲突，已加回
+> `queueWorthSameAccountRetry` gate 并补回归用例
+> `TestStreamWithSlotFakeQueueIgnoresWaitFirstToken` → 行为变更，已重新构建。
 > 上一次实代码合并为 2026-10-23 的 `2671a21..62facdb`（context 档位
 > 200K/400K/1M + 排队重试补全）。
 
@@ -57,6 +59,12 @@ git status --short | grep '^UU'      # 冲突文件
    （queueCount>0 或 serviceAvailable）才消耗同账号重试；假队列
    （queueCount=0 且 serviceAvailable=false）直接上抛给 `streamWithQueueRecovery`
    立即换号。
+   ⚠️ 2026-10-27（`6cae517`）：上游新增的「首字前一直等」
+   （`QueueWaitFirstToken`，默认开）**去掉次数上限**，上游版本不再调用本 gate
+   ——照抄会让假队列一直等到 `ctx` 取消，换号永不发生。本地在
+   `streamWithSlot` 的「首字前一直等」判定**之前**先保留 gate；回归用例
+   `TestStreamWithSlotFakeQueueIgnoresWaitFirstToken` 守住（去掉 gate 即 3s 后失败）。
+   该用例必须用**纯 JSON** detail（见第 6 条 `pureQueueDetail` helper）。
 3. **`account/model.go` `QuotaInfo`**：本地超集（`OrgResourcePackage` +
    `AvailableCredits` 汇总 + 注释）。上游对这块的改动往往只是 gofmt 重排。
 4. **`internal/bridge/bridge.go` `CallOpts`**：本地 `ReasoningEffort` /

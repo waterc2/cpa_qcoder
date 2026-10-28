@@ -46,6 +46,9 @@ var (
 	QueueMaxRetries  = DefaultQueueMaxRetries
 	QueueWaitCap     = DefaultQueueWaitCapSec * time.Second
 	QueueWaitDefault = DefaultQueueWaitDefSec * time.Second
+	// QueueWaitFirstToken 排队时「首字前一直等」：true=直到出首字或客户端断开才停
+	// （忽略 QueueMaxRetries）；false=按 QueueMaxRetries 封顶。默认开（true）。
+	QueueWaitFirstToken = true
 )
 
 const (
@@ -58,9 +61,10 @@ const (
 
 // ApplyQueueSettings 应用控制台配置的排队重试参数到包级变量（带默认值与夹取）。
 // 启动（LoadRuntimeSettings）与保存设置后各调用一次，使改动即时生效、无需重启。
-// 三个入参对应 settings 的 queue_max_retries / queue_wait_cap_sec / queue_wait_default_sec；
-// 每个 ≤0 时回退各自默认值（故无「禁用」语义，最小 1 次重试）。
-func ApplyQueueSettings(maxRetries, waitCapSec, waitDefaultSec int) {
+// 入参对应 settings 的 queue_max_retries / queue_wait_cap_sec / queue_wait_default_sec /
+// queue_wait_first_token；每个时长 ≤0 时回退各自默认值。
+// waitFirstToken=true 时忽略 maxRetries，改为「首字前一直等（仅客户端断开停止）」。
+func ApplyQueueSettings(maxRetries, waitCapSec, waitDefaultSec int, waitFirstToken bool) {
 	if maxRetries <= 0 {
 		maxRetries = DefaultQueueMaxRetries
 	}
@@ -70,8 +74,9 @@ func ApplyQueueSettings(maxRetries, waitCapSec, waitDefaultSec int) {
 	QueueMaxRetries = maxRetries
 	QueueWaitCap = clampQueueSeconds(waitCapSec, DefaultQueueWaitCapSec)
 	QueueWaitDefault = clampQueueSeconds(waitDefaultSec, DefaultQueueWaitDefSec)
-	logger.Info("queue retry applied: maxRetries=%d waitCap=%s waitDefault=%s",
-		QueueMaxRetries, QueueWaitCap, QueueWaitDefault)
+	QueueWaitFirstToken = waitFirstToken
+	logger.Info("queue retry applied: maxRetries=%d waitCap=%s waitDefault=%s waitFirstToken=%v",
+		QueueMaxRetries, QueueWaitCap, QueueWaitDefault, QueueWaitFirstToken)
 }
 
 func clampQueueSeconds(v, def int) time.Duration {

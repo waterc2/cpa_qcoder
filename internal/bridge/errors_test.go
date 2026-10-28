@@ -5,11 +5,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
 	"time"
 	"unicode/utf8"
+
+	"qoder2api/account"
 )
 
 func TestIsTransientUpstream(t *testing.T) {
@@ -211,6 +215,24 @@ func nestedResourceLimitDetail(isQueued bool, serviceAvailable bool, queueCount 
 }
 
 // mustJSONString 把任意字符串编码成 JSON 字符串字面量（含两端双引号）。
+// pureQueueDetail 生成与生产 Detail 一致的**纯 JSON**（无 "upstream 403: " 前缀）
+// 队列 detail，供 parseQueueError 路径使用。
+func pureQueueDetail(isQueued bool, serviceAvailable bool, queueCount int) string {
+	wait := 0
+	if isQueued {
+		wait = 30
+	}
+	inner := fmt.Sprintf(
+		`{"isQueued":%v,"modelKey":"qfmodel","queueCount":%d,`+
+			`"queueType":"p3","retryAfterSeconds":%d,"serviceAvailable":%v,`+
+			`"subCode":"RESOURCE_LIMIT","waitTime":%d}`,
+		isQueued, queueCount, wait, serviceAvailable, wait)
+	mid := fmt.Sprintf(
+		`{"code":"10605","message":%s,"subCode":"RESOURCE_LIMIT"}`,
+		mustJSONString(inner))
+	return fmt.Sprintf(`{"code":"403","message":%s}`, mustJSONString(mid))
+}
+
 func mustJSONString(s string) string {
 	b, err := json.Marshal(s)
 	if err != nil {
@@ -361,23 +383,24 @@ func TestQueueRetryAfter(t *testing.T) {
 }
 
 func TestApplyQueueSettings(t *testing.T) {
-	omr, owc, owd := QueueMaxRetries, QueueWaitCap, QueueWaitDefault
-	defer func() { QueueMaxRetries, QueueWaitCap, QueueWaitDefault = omr, owc, owd }()
+	omr, owc, owd, oft := QueueMaxRetries, QueueWaitCap, QueueWaitDefault, QueueWaitFirstToken
+	defer func() { QueueMaxRetries, QueueWaitCap, QueueWaitDefault, QueueWaitFirstToken = omr, owc, owd, oft }()
 
 	// 全 0 → 各自默认
-	ApplyQueueSettings(0, 0, 0)
+	ApplyQueueSettings(0, 0, 0, false)
 	if QueueMaxRetries != DefaultQueueMaxRetries ||
 		QueueWaitCap != DefaultQueueWaitCapSec*time.Second ||
-		QueueWaitDefault != DefaultQueueWaitDefSec*time.Second {
-		t.Errorf("defaults not applied: %d %v %v", QueueMaxRetries, QueueWaitCap, QueueWaitDefault)
+		QueueWaitDefault != DefaultQueueWaitDefSec*time.Second ||
+		QueueWaitFirstToken != false {
+		t.Errorf("defaults not applied: %d %v %v %v", QueueMaxRetries, QueueWaitCap, QueueWaitDefault, QueueWaitFirstToken)
 	}
-	// 正常值透传
-	ApplyQueueSettings(5, 10, 8)
-	if QueueMaxRetries != 5 || QueueWaitCap != 10*time.Second || QueueWaitDefault != 8*time.Second {
-		t.Errorf("custom not applied: %d %v %v", QueueMaxRetries, QueueWaitCap, QueueWaitDefault)
+	// 正常值透传（含开关）
+	ApplyQueueSettings(5, 10, 8, true)
+	if QueueMaxRetries != 5 || QueueWaitCap != 10*time.Second || QueueWaitDefault != 8*time.Second || QueueWaitFirstToken != true {
+		t.Errorf("custom not applied: %d %v %v %v", QueueMaxRetries, QueueWaitCap, QueueWaitDefault, QueueWaitFirstToken)
 	}
 	// 超上限夹取
-	ApplyQueueSettings(99, 9999, 9999)
+	ApplyQueueSettings(99, 9999, 9999, false)
 	if QueueMaxRetries != maxQueueRetriesCeiling ||
 		QueueWaitCap != maxQueueWaitCeilingSec*time.Second ||
 		QueueWaitDefault != maxQueueWaitCeilingSec*time.Second {
@@ -393,5 +416,58 @@ func TestFriendlyUpstreamError_Plain403Unchanged(t *testing.T) {
 	}
 	if !strings.Contains(msg, "upstream 403") {
 		t.Errorf("message = %q, want upstream 403 prefix", msg)
+	}
+}
+
+// TestStreamWithSlotFakeQueueIgnoresWaitFirstToken 守住本地语义 #2：
+// 上游的「首字前一直等」（QueueWaitFirstToken=true）必须仍然让假队列
+// （queueCount=0 && serviceAvailable=false）立刻上抛给 streamWithQueueRecovery
+// 去换号，而不是在 streamWithSlot 里空等到 ctx 取消。去掉 queueWorthSameAccountRetry
+// 这道 gate 后本用例会一直等到 ctx 取消（3s），正是上游提交 6cae517 引入的回归形态。
+func TestStreamWithSlotFakeQueueIgnoresWaitFirstToken(t *testing.T) {
+	withFastBackoff(t)
+	owft, omr := QueueWaitFirstToken, QueueMaxRetries
+	defer func() { QueueWaitFirstToken, QueueMaxRetries = owft, omr }()
+	QueueWaitFirstToken = true // 首字前一直等：无次数上限
+	QueueMaxRetries = 2
+
+	// retryAfterSeconds=30：若 gate 缺失，第一次等待就要 30s，远超 ctx 的 3s。
+	// queueCount=0 && serviceAvailable=false → 假队列（上游 403 但并未真正排队）。
+	// detail 必须是纯 JSON，不带 "upstream 403: " 前缀——生产 Detail 就是 HTTP body
+	// 原文；前缀只属于 parseUpstreamNestedError 的测试 helper（见 qoder 参考文档）。
+	detail := pureQueueDetail(true, false, 0)
+
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, sseEnvelope(403, detail))
+	}))
+	defer srv.Close()
+
+	b := envelopeBridge(t, srv.URL)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	slot := &Slot{Name: "acct-1", Region: account.RegionCN, client: b.client}
+	start := time.Now()
+	emitted, err := b.streamWithSlot(ctx, slot, srv.URL,
+		map[string]interface{}{"model_config": map[string]interface{}{"key": "qfmodel"}},
+		nil, func(Delta) {})
+	if emitted {
+		t.Fatal("should not have emitted any delta")
+	}
+	if err == nil {
+		t.Fatal("fake queue must surface an error so the outer pool can fail over")
+	}
+	if ctx.Err() != nil {
+		t.Fatal("fake queue must not wait until ctx cancellation: queueWorthSameAccountRetry gate is missing")
+	}
+	if elapsed := time.Since(start); elapsed > 1*time.Second {
+		t.Fatalf("fake queue returned after %s: it waited on the same account instead of failing over "+
+			"(queueWorthSameAccountRetry gate is missing)", elapsed)
+	}
+	if hits != 1 {
+		t.Errorf("upstream hits = %d, want 1 (fake queue must not retry on the same account)", hits)
 	}
 }

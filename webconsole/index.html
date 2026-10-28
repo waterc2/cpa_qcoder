@@ -307,6 +307,35 @@
     </section>
 
     <section class="card">
+      <h3>模型排队重试 <span class="muted" style="font-size:12px">（上游 10605 isQueued 拥塞时，同账号等待重试；换号无益）</span></h3>
+      <div class="row" style="gap:8px; flex-wrap:wrap; align-items:center">
+        <span style="font-size:12px">最多重试</span>
+        <input id="queueMaxRetriesInput" type="number" min="1" max="10" placeholder="2" style="width:70px" />
+        <span style="font-size:12px">次 · 单次等待上限</span>
+        <input id="queueWaitCapInput" type="number" min="1" max="300" placeholder="30" style="width:80px" />
+        <span style="font-size:12px">秒 · 默认等待</span>
+        <input id="queueWaitDefaultInput" type="number" min="1" max="300" placeholder="15" style="width:80px" />
+        <span style="font-size:12px">秒</span>
+      </div>
+      <div class="row" style="gap:6px; align-items:center; margin-top:8px">
+        <input id="queueWaitFirstTokenInput" type="checkbox" style="width:auto" />
+        <span style="font-size:12px">首字前一直等（忽略重试次数，直到出首字或客户端断开才停）</span>
+      </div>
+      <div class="muted" style="font-size:11px; margin-top:6px">
+        热门模型排队时在原账号等待后重试，撑到队列疏通常能成功；留空/0 = 用默认（2 次 / 30s / 15s）。
+      </div>
+      <div class="row" style="margin-top:10px">
+        <button id="saveQueueBtn">保存排队设置</button>
+        <span class="msg" id="queueMsg"></span>
+      </div>
+    </section>
+
+    <section class="card">
+      <h3>最近排队等待 <span class="muted" style="font-size:12px">（模型命中上游 10605 排队时的等待记录，最新在前）</span></h3>
+      <div id="waitLogBox" style="font-size:12px">加载中...</div>
+    </section>
+
+    <section class="card">
       <h3>NewAPI / 中转站接入</h3>
       <div class="muted" style="margin-bottom:12px">
         把下面地址和密钥填到 NewAPI 渠道（OpenAI 兼容）。本地默认只监听 127.0.0.1。
@@ -351,22 +380,6 @@
             <input id="oldPassword1" type="password" placeholder="输入旧密码 1/2" style="width: 140px; margin-right: 6px;" />
             <input id="oldPassword2" type="password" placeholder="输入旧密码 2/2" style="width: 140px; margin-right: 6px;" />
             <input id="newPassword" type="password" placeholder="新密码（可选）" style="width: 140px;" />
-          </div>
-        </div>
-
-        <div style="margin-top:12px">
-          <label>模型排队重试（上游 10605 isQueued 时，同账号等待重试；换号无益）</label>
-          <div class="row" style="gap:8px; flex-wrap:wrap; align-items:center">
-            <span style="font-size:12px">最多重试</span>
-            <input id="queueMaxRetriesInput" type="number" min="1" max="10" placeholder="2" style="width:70px" />
-            <span style="font-size:12px">次 · 单次等待上限</span>
-            <input id="queueWaitCapInput" type="number" min="1" max="300" placeholder="30" style="width:80px" />
-            <span style="font-size:12px">秒 · 默认等待</span>
-            <input id="queueWaitDefaultInput" type="number" min="1" max="300" placeholder="15" style="width:80px" />
-            <span style="font-size:12px">秒</span>
-          </div>
-          <div style="font-size:11px; color:var(--muted); margin-top:4px">
-            热门模型排队时在原账号等待后重试，撑到队列疏通常能成功；留空/0 = 用默认（2 次 / 30s / 15s）。
           </div>
         </div>
       </div>
@@ -435,6 +448,9 @@
       }
       if (document.activeElement !== $('queueWaitDefaultInput')) {
         $('queueWaitDefaultInput').value = Number(settings.queue_wait_default_sec) > 0 ? settings.queue_wait_default_sec : 15;
+      }
+      if (document.activeElement !== $('queueWaitFirstTokenInput')) {
+        $('queueWaitFirstTokenInput').checked = !!settings.queue_wait_first_token;
       }
       const cfg = {
         name: 'QCCG / Qoder',
@@ -792,6 +808,30 @@
       if (cell) cell.innerHTML = renderQuota(quotaCache[id]);
     }
 
+    async function loadWaitLog() {
+      try {
+        const data = await api('/api/queue/log');
+        const entries = data.entries || [];
+        const box = $('waitLogBox');
+        if (!entries.length) {
+          box.innerHTML = '<span class="muted">暂无排队记录（模型命中上游排队后，这里会显示每轮的等待时长）</span>';
+          return;
+        }
+        const oc = { success: '✅成功', gave_up: '⏳超时放弃', cancelled: '🚫客户端断开', error: '⚠️其它错误' };
+        const rows = entries.slice(0, 20).map(e => {
+          const t = new Date(e.time).toLocaleTimeString();
+          return `<tr><td>${t}</td><td>${e.model||''}</td><td>${e.account||''}</td><td>${e.region||''}</td>` +
+                 `<td style="text-align:right">${e.tries}</td><td style="text-align:right">${e.total_wait_sec}s</td>` +
+                 `<td>${oc[e.outcome]||e.outcome}</td></tr>`;
+        }).join('');
+        box.innerHTML = `<table style="width:100%; border-collapse:collapse"><thead><tr style="text-align:left; color:var(--muted)">` +
+          `<th>时间</th><th>模型</th><th>账号</th><th>区域</th><th style="text-align:right">重试</th><th style="text-align:right">累计等待</th><th>结果</th>` +
+          `</tr></thead><tbody>${rows}</tbody></table>`;
+      } catch (e) {
+        $('waitLogBox').innerHTML = `<span class="msg err">${e.message}</span>`;
+      }
+    }
+
     async function refresh() {
       try {
         const status = await api('/api/status');
@@ -801,6 +841,7 @@
       }
 
       await loadConnection();
+      loadWaitLog();
 
       try {
         let pool = null;
@@ -968,6 +1009,28 @@
       }
     };
 
+    $('saveQueueBtn').onclick = async () => {
+      const qmr = Number($('queueMaxRetriesInput').value);
+      const qwc = Number($('queueWaitCapInput').value);
+      const qwd = Number($('queueWaitDefaultInput').value);
+      // 仅提交 >0 的数值（留空/0 = 不改，沿用默认或已存值）；开关总是提交
+      const body = { queue_wait_first_token: $('queueWaitFirstTokenInput').checked };
+      if (qmr > 0) body.queue_max_retries = qmr;
+      if (qwc > 0) body.queue_wait_cap_sec = qwc;
+      if (qwd > 0) body.queue_wait_default_sec = qwd;
+      $('queueMsg').className = 'msg';
+      $('queueMsg').textContent = '保存中...';
+      try {
+        await api('/api/settings/save', { method: 'POST', body: JSON.stringify(body) });
+        $('queueMsg').className = 'msg ok';
+        $('queueMsg').textContent = '已保存，即时生效';
+        await refresh();
+      } catch (e) {
+        $('queueMsg').className = 'msg err';
+        $('queueMsg').textContent = e.message;
+      }
+    };
+
     $('saveConnBtn').onclick = async () => {
       const port = Number($('bridgePortInput').value || 8963);
       const bridge_token = ($('bridgeTokenInput').value || '').trim() || 'qccg';
@@ -1005,13 +1068,6 @@
       $('connMsg').textContent = '保存中...';
       try {
         const body = { port, bridge_token };
-        // 排队重试参数：仅提交 >0 的值（留空/0 = 不改，沿用默认或已存值）
-        const qmr = Number($('queueMaxRetriesInput').value);
-        const qwc = Number($('queueWaitCapInput').value);
-        const qwd = Number($('queueWaitDefaultInput').value);
-        if (qmr > 0) body.queue_max_retries = qmr;
-        if (qwc > 0) body.queue_wait_cap_sec = qwc;
-        if (qwd > 0) body.queue_wait_default_sec = qwd;
         if (passwordData !== null) {
           // 根据类型决定使用哪个字段
           if (typeof passwordData === 'object') {

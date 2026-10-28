@@ -161,6 +161,7 @@ func main() {
 	mux.HandleFunc("/api/active", handleSetActiveAccount)
 	mux.HandleFunc("/api/pool", handlePoolStatus)
 	mux.HandleFunc("/api/pool/cool", handlePoolCool)
+	mux.HandleFunc("/api/queue/log", handleQueueWaitLog)
 	mux.HandleFunc("/api/settings", handleGetSettings)
 	mux.HandleFunc("/api/settings/save", handleSaveSettings)
 	mux.HandleFunc("/api/models", handleListModels)
@@ -450,6 +451,11 @@ func handlePoolCool(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+// handleQueueWaitLog 返回最近排队等待记录（最新在前），供控制台「最近等待记录」面板。
+func handleQueueWaitLog(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]interface{}{"entries": svc.RecentWaitLog()})
+}
+
 func handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	settings, err := svc.GetSettings()
 	if err != nil {
@@ -466,6 +472,9 @@ func handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	// 不回传明文控制台密码，只标记是否已设置
 	hasConsolePwd := strings.TrimSpace(out.ConsolePassword) != "" || strings.TrimSpace(os.Getenv("QODER2API_CONSOLE_PASSWORD")) != ""
 	out.ConsolePassword = ""
+	// 排队「首字前一直等」回传有效值（未设置时默认开），供控制台复选框正确显示
+	effFirstToken := out.EffectiveQueueWaitFirstToken()
+	out.QueueWaitFirstToken = &effFirstToken
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"settings":             out,
 		"connection":           connectionInfo(),
@@ -492,9 +501,10 @@ func handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 		ContextTierOverrides map[string]string `json:"context_tier_overrides"`
 		ConsolePassword      *string           `json:"console_password"`
 		// 模型排队重试参数（控制台可配，热更新生效）
-		QueueMaxRetries     *int `json:"queue_max_retries"`
-		QueueWaitCapSec     *int `json:"queue_wait_cap_sec"`
-		QueueWaitDefaultSec *int `json:"queue_wait_default_sec"`
+		QueueMaxRetries     *int  `json:"queue_max_retries"`
+		QueueWaitCapSec     *int  `json:"queue_wait_cap_sec"`
+		QueueWaitDefaultSec *int  `json:"queue_wait_default_sec"`
+		QueueWaitFirstToken *bool `json:"queue_wait_first_token"`
 		// 新格式：包含旧密码和新密码
 		ConsolePasswordNew *struct {
 			OldPassword string  `json:"old_password"`
@@ -581,6 +591,11 @@ func handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 		logger.Info("queue retry set: maxRetries=%d waitCap=%ds waitDefault=%ds",
 			cur.QueueMaxRetries, cur.QueueWaitCapSec, cur.QueueWaitDefaultSec)
 	}
+	if req.QueueWaitFirstToken != nil {
+		v := *req.QueueWaitFirstToken
+		cur.QueueWaitFirstToken = &v
+		logger.Info("queue wait_first_token set to %v", v)
+	}
 	if req.AutoCheckinTimes != nil {
 		var times []string
 		for _, t := range req.AutoCheckinTimes {
@@ -637,7 +652,7 @@ func handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// 排队重试参数热更新（无需重启）
-	svc.ApplyQueueSettings(cur.QueueMaxRetries, cur.QueueWaitCapSec, cur.QueueWaitDefaultSec)
+	svc.ApplyQueueSettings(cur.QueueMaxRetries, cur.QueueWaitCapSec, cur.QueueWaitDefaultSec, cur.EffectiveQueueWaitFirstToken())
 	safe := *cur
 	safe.ConsolePassword = ""
 	writeJSON(w, http.StatusOK, map[string]interface{}{

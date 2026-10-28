@@ -160,6 +160,19 @@ cmd/cpa-plugin/
 
 ## 上游同步
 
+- 2026-10-27：合并 `872d9b9..6cae517`（队列「首字前一直等」开关 + 最近排队等待
+  记录）。上游把 10605 `isQueued` 从「按次数封顶重试」改为可无限等待，并新增
+  `wait-log` 环形缓冲 + `/api/queue/log` 与控制台面板。
+  **冲突处理（本地语义优先）**：上游版的 `streamWithSlot` 丢掉了
+  `queueWorthSameAccountRetry` gate——「首字前一直等」一旦生效，假队列
+  （`queueCount=0 && serviceAvailable=false`）会被它一直等到客户端断开，外层
+  账号池就再也不换号了。本地保留 gate，并把它放在「首字前一直等」判定**之前**，
+  假队列永远先上抛去换号；新增回归用例
+  `TestStreamWithSlotFakeQueueIgnoresWaitFirstToken`（去掉 gate 即 3s 后失败）。
+  README 冲突按本地精简版解决，未并入上游完整 README。
+  注意：`ApplyQueueSettings` 签名新增第 4 个参数，本地调用点（`service.go`、
+  `main.go`）已全部更新。
+
 - 2026-10-26：合并 `62facdb..872d9b9`（纯文档/面板，无 Go 代码改动）。
   上游刷新模型清单快照：`kmodel_latest` Kimi-K3 → **Kimi-K3.1-Pro**（key 不变，
   倍率 1.4→1）、CN 移除 `qmodel`（11→10 个）、Global `gfmodel` max_output
