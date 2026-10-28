@@ -126,6 +126,13 @@ func handleManagement(raw []byte) ([]byte, error) {
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleUsageQuery(req)))
 	case req.Method == http.MethodGet && path == base+"/scheduler":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleSchedulerStatus()))
+	case req.Method == http.MethodPost && path == base+"/scheduler/queue-breaker":
+		out := handleQueueBreakerUpdate(req)
+		status := http.StatusOK
+		if out["error"] != nil {
+			status = http.StatusBadRequest
+		}
+		return okEnvelope(mgmtJSONResponse(status, out))
 	}
 	return okEnvelope(mgmtJSONResponse(http.StatusNotFound, map[string]any{"error": "not found: " + path}))
 }

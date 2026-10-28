@@ -585,3 +585,54 @@ func handleSchedulerStatus() map[string]any {
 		"queue_breaker":   qoderQueueBreaker.snapshot(),
 	}
 }
+
+// handleQueueBreakerUpdate retunes the queue breaker at runtime so the divert
+// threshold can be changed without restarting the proxy process. The values are
+// process-local: start_cpa.sh still holds the durable defaults.
+func handleQueueBreakerUpdate(req pluginapi.ManagementRequest) map[string]any {
+	var body struct {
+		Threshold   *int   `json:"threshold"`
+		Cooldown    string `json:"cooldown"`
+		MaxCooldown string `json:"max_cooldown"`
+		Reset       *bool  `json:"reset"`
+	}
+	if len(req.Body) > 0 {
+		if err := json.Unmarshal(req.Body, &body); err != nil {
+			return map[string]any{"error": "invalid body: " + err.Error()}
+		}
+	}
+
+	if body.Threshold != nil {
+		if _, ok := qoderQueueBreaker.applyRuntimeThreshold(*body.Threshold); !ok {
+			return map[string]any{"error": "threshold must be > 0"}
+		}
+	}
+
+	if strings.TrimSpace(body.Cooldown) != "" || strings.TrimSpace(body.MaxCooldown) != "" {
+		cooldown := qoderQueueBreaker.cooldown
+		maxCooldown := qoderQueueBreaker.maxCooldown
+		if v := strings.TrimSpace(body.Cooldown); v != "" {
+			d, err := time.ParseDuration(v)
+			if err != nil {
+				return map[string]any{"error": "invalid cooldown: " + err.Error()}
+			}
+			cooldown = d
+		}
+		if v := strings.TrimSpace(body.MaxCooldown); v != "" {
+			d, err := time.ParseDuration(v)
+			if err != nil {
+				return map[string]any{"error": "invalid max_cooldown: " + err.Error()}
+			}
+			maxCooldown = d
+		}
+		if _, _, ok := qoderQueueBreaker.applyRuntimeCooldown(cooldown, maxCooldown); !ok {
+			return map[string]any{"error": "cooldown must be > 0"}
+		}
+	}
+
+	if body.Reset != nil && *body.Reset {
+		qoderQueueBreaker.reset()
+	}
+
+	return map[string]any{"ok": true, "queue_breaker": qoderQueueBreaker.snapshot()}
+}

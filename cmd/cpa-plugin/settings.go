@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"qoder2api/account"
 )
@@ -19,6 +21,10 @@ type persistedConfig struct {
 	CheckinOnStart       *bool    `json:"checkin_on_start,omitempty"`
 	DefaultRegion        string   `json:"default_region,omitempty"`
 	MaxConcurrentPerAuth *int     `json:"max_concurrency,omitempty"`
+	// QueueBreakerSessions overrides QODER2API_QUEUE_BREAKER_SESSIONS so the
+	// divert threshold can be retuned without restarting the proxy process.
+	QueueBreakerSessions *int   `json:"queue_breaker_sessions,omitempty"`
+	QueueBreakerCooldown string `json:"queue_breaker_cooldown,omitempty"`
 }
 
 func persistedConfigPath() string {
@@ -53,6 +59,17 @@ func loadPersistedConfig() {
 	}
 	configMu.Unlock()
 	qoderScheduler.setMax(currentConfig().MaxConcurrentPerAuth)
+
+	// Queue-breaker overrides are process-local state, not part of pluginConfig:
+	// apply them straight onto the live breaker so a reconfigure picks them up.
+	if pc.QueueBreakerSessions != nil {
+		qoderQueueBreaker.applyRuntimeThreshold(*pc.QueueBreakerSessions)
+	}
+	if strings.TrimSpace(pc.QueueBreakerCooldown) != "" {
+		if d, err := time.ParseDuration(strings.TrimSpace(pc.QueueBreakerCooldown)); err == nil {
+			qoderQueueBreaker.applyRuntimeCooldown(d, qoderQueueBreaker.maxCooldown)
+		}
+	}
 }
 
 // savePersistedConfig writes the current panel-owned config to disk.
@@ -66,6 +83,12 @@ func savePersistedConfig() {
 		MaxConcurrentPerAuth: intPtr(activeConfig.MaxConcurrentPerAuth),
 	}
 	configMu.RUnlock()
+
+	// Preserve breaker overrides that were set through the runtime endpoint.
+	if qoderQueueBreaker != nil {
+		pc.QueueBreakerSessions = intPtr(qoderQueueBreaker.threshold)
+		pc.QueueBreakerCooldown = qoderQueueBreaker.cooldown.String()
+	}
 
 	raw, err := json.MarshalIndent(pc, "", "  ")
 	if err != nil {

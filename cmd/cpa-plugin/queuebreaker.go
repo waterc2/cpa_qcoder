@@ -312,6 +312,37 @@ func (b *qoderQueueBreakerState) reset() {
 	b.mu.Unlock()
 }
 
+// applyRuntimeThreshold changes the divert threshold without restarting the
+// proxy process. The threshold is otherwise read once from the environment at
+// package init, so ops used to need a full restart to retune it. A non-positive
+// value is rejected (use the env default instead). Existing waiting sets and
+// cooldowns are preserved so an in-flight episode keeps its state.
+func (b *qoderQueueBreakerState) applyRuntimeThreshold(threshold int) (int, bool) {
+	if b == nil || threshold <= 0 {
+		return 0, false
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.threshold = threshold
+	return b.threshold, true
+}
+
+// applyRuntimeCooldown changes the divert cooldown base. Takes effect for the
+// next episode; an already-open cooldown keeps its absolute deadline.
+func (b *qoderQueueBreakerState) applyRuntimeCooldown(cooldown, maxCooldown time.Duration) (time.Duration, time.Duration, bool) {
+	if b == nil || cooldown <= 0 {
+		return 0, 0, false
+	}
+	if maxCooldown < cooldown {
+		maxCooldown = cooldown
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.cooldown = cooldown
+	b.maxCooldown = maxCooldown
+	return b.cooldown, b.maxCooldown, true
+}
+
 func normalizeQueueBreakerModels(models []string) []string {
 	seen := make(map[string]struct{}, len(models))
 	out := make([]string, 0, len(models))
