@@ -6,7 +6,13 @@
 >
 > 部署总览见 `/home/brady/tool/README-cpa.md`。
 >
-> 最近执行：**2026-10-27**，合并上游 `872d9b9..6cae517`（队列「首字前一直等」
+> 最近执行：**2026-10-30**，合并上游 `6cae517..8d49aa6`（CALL_COUNT_LIMIT 排队报文被
+> 预筛选漏掉：`parseUpstreamNestedError` 预筛选改匹配不带引号的 `subCode`，
+> 修复后真排队报文正确进入排队路径，不再误冷却+换号）。上游新增用例断言排队错误
+> 在 `ShouldFailover` 一律不换号，与本地语义 #1 相悷，已改写为本地语义并补
+> `queueWorthSameAccountRetry` 断言 → 行为变更，已重新构建 v0.1.5 并部署重启。
+> （同时入库：2026-10-27 的未推送提交 28e88d9 队列熔断运行时调参。）
+> 上次执行：2026-10-27，合并上游 `872d9b9..6cae517`（队列「首字前一直等」
 > 开关 + 最近排队等待记录）。上游改动与本地语义 #2 直接冲突，已加回
 > `queueWorthSameAccountRetry` gate 并补回归用例
 > `TestStreamWithSlotFakeQueueIgnoresWaitFirstToken` → 行为变更，已重新构建。
