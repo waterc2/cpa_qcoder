@@ -160,6 +160,19 @@ cmd/cpa-plugin/
 
 ## 上游同步
 
+- 2026-10-30：合并 `6cae517..8d49aa6`（CALL_COUNT_LIMIT 排队报文被预筛选漏掉）。
+  上游把 `parseUpstreamNestedError` 预筛选从匹配带引号的 `"subCode"` 改为匹配
+  不带引号的 `subCode`——内层 JSON 嵌在外层 message 字符串里、引号被转义成
+  `\"subCode\"`，导致与 `RESOURCE_LIMIT` 同构的 `CALL_COUNT_LIMIT`（带
+  `isQueued:true`/`retryAfterSeconds`）被误判普通 `upstream_error`，误冷却+换号、
+  同账号等待不生效。修复后真排队报文正确进入排队路径。
+  **分歧处理（本地语义优先）**：上游新增回归用例
+  `TestFriendlyUpstreamError_CallCountLimitQueued` 断言排队错误在
+  `ShouldFailover` 一律不换号——与本地架构相悷（见上条 2026-10-27 记录），
+  已改写为本地语义：池层保持可换号，不换号由同账号等待路径完成；
+  并补充 `queueWorthSameAccountRetry`（真队列）断言。
+  README 冲突按本地精简版解决，未并入上游完整 README。
+
 - 2026-10-27：合并 `872d9b9..6cae517`（队列「首字前一直等」开关 + 最近排队等待
   记录）。上游把 10605 `isQueued` 从「按次数封顶重试」改为可无限等待，并新增
   `wait-log` 环形缓冲 + `/api/queue/log` 与控制台面板。

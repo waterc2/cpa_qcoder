@@ -274,6 +274,51 @@ func TestParseUpstreamNestedError_NotNested(t *testing.T) {
 	}
 }
 
+// 回归：CALL_COUNT_LIMIT 与 RESOURCE_LIMIT 结构相同，但预筛选若只匹配带引号的
+// "subCode" 会因内层 JSON 引号被转义而漏掉它（isQueued/retryAfter 来不及解析），
+// 导致排队被误判成普通错误、进而冷却+换号。
+func TestParseUpstreamNestedErrorCallCountLimit(t *testing.T) {
+	detail := strings.ReplaceAll(
+		nestedResourceLimitDetail(true, true, 10),
+		"RESOURCE_LIMIT", "CALL_COUNT_LIMIT",
+	)
+	d, ok := parseUpstreamNestedError(detail)
+	if !ok {
+		t.Fatal("isQueued=true 的 CALL_COUNT_LIMIT 报文被预筛选漏掉")
+	}
+	if d.SubCode != "CALL_COUNT_LIMIT" || !d.IsQueued {
+		t.Errorf("parsed detail = %+v", d)
+	}
+}
+
+func TestFriendlyUpstreamError_CallCountLimitQueued(t *testing.T) {
+	// 真实场景：CALL_COUNT_LIMIT + isQueued=true 应按「排队」处理，进入同账号
+	// 等待（否则误判普通 upstream_error -> 冷却 + 换号、等待策略不生效）。
+	detail := strings.ReplaceAll(
+		nestedResourceLimitDetail(true, true, 10),
+		"RESOURCE_LIMIT", "CALL_COUNT_LIMIT",
+	)
+	msg, et := FriendlyUpstreamError(403, detail)
+	if et != ErrTypeUpstreamQueue {
+		t.Errorf("errType = %q, want %q", et, ErrTypeUpstreamQueue)
+	}
+	if !strings.Contains(msg, "排队") {
+		t.Errorf("message should mention queueing, got: %s", msg)
+	}
+	// 本分支与上游语义不同（见 TestShouldFailover_Queue 与 pool.go 注释）：
+	// 上游断言排队错误在 ShouldFailover 一律不换号；本地 streamWithSlot 已在
+	// 同账号内做有界等待，错误若仍上抛到池这层，说明假队列或单账号排队预算
+	// 耗尽，外层必须能换号——故 403 保持 failover=true。真正的「不换号」由
+	// 分类为 upstream_queued + queueWorthSameAccountRetry（真队列）在同账号
+	// 等待路径内完成。
+	if !ShouldFailover(NewUpstreamError(403, detail)) {
+		t.Error("queued CALL_COUNT_LIMIT must stay failover-able at the pool level (local semantics)")
+	}
+	if !queueWorthSameAccountRetry(NewUpstreamError(403, detail)) {
+		t.Error("real queued CALL_COUNT_LIMIT (queueCount=10) should be retried on the same account")
+	}
+}
+
 func TestFriendlyUpstreamError_ResourceLimit(t *testing.T) {
 	// 未排队且服务不可用（无 retryAfter）：账号无权使用该模型（确定性拒绝）
 	detail := nestedResourceLimitDetail(false, false, 0)
