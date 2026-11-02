@@ -96,3 +96,46 @@ SOTA 专属积分等「专属资源包」会单独出现在额度查询结果里
 
 > ⚠️ `mmodel` 只是**显示名**变化，key 未变，已有调用与映射无需调整。
 > 若在控制台手工配过模型映射且使用了旧显示名，请改为 key。
+
+---
+
+## 国际版 · 2026-11-02 实测快照（DeepSeek 免费档消失）
+
+用部署中的 9 个 Global 账号逐个调用 `/algo/api/v2/model/list`（legacy 协议，
+无设备指纹）拉取实时清单，9 个账号完全一致：12 个模型，**只有一个 0 价模型**。
+
+| Key | 显示名 | price_factor | max_input | max_output | 推理 |
+|-----|--------|:------------:|:---------:|:----------:|:----:|
+| `auto` | Auto | 0.5 | 200,000 | 16,384 | — |
+| `ultimate` | Ultimate | **2.0** ↑ | 1,000,000 | 32,768 | ✅ |
+| `efficient` | Efficient | 0.3 | 200,000 | 16,384 | — |
+| `qmodel_38max` | Qwen3.8-Max | **0.5** ↑ | 180,000 | 32,768 | ✅ |
+| `qfmodel` | Qwen3.8-Flash | **0** 🆓 | 180,000 | 32,768 | ✅ |
+| `dmodel` | DeepSeek-V4-Pro | 0.5 | 1,000,000 | 32,768 | ✅ |
+| `dfmodel` | DeepSeek-Flash | **0.1** 💰 | 1,000,000 | 32,768 | ✅ |
+| `gmodel` | GLM-5.3 | 0.8 | 180,000 | 32,768 | ✅ |
+| `gfmodel` | GLM-5.3-Flash | 0.1 | 1,000,000 | 32,768 | ✅ |
+| `kmodel` | Kimi-K2.8-Preview | 0.8 | — | 16,384 | — |
+| `kmodel_latest` | **Kimi-K3.1-Pro** | 1.0 | 180,000 | 16,384 | — |
+| `mmodel` | MiniMax-M3.1-Flash | 0.1 | 180,000 | 16,384 | — |
+
+**与 2026-10 快照的差异**
+
+| Key | 变化 |
+|-----|------|
+| `dfmodel` | 💰 **price 0 → 0.1**：DeepSeek-Flash 不再是免费模型，国际版唯一 0 价模型只剩 `qfmodel` |
+| `ultimate` | 💰 price 0.4 → **2.0** |
+| `qmodel_38max` | 💰 price 0.2 → **0.5** |
+| `kmodel_latest` | 显示名 Kimi-K3 → Kimi-K3.1-Pro，price 1.4 → **1.0**（上游 2026-10-26 已记录，本地兜底表此前未同步） |
+| `performance` / `qmodel` / `qmodel_latest` | 🚫 国际版不再下发（国内清单仍可能有） |
+| `dfmodel` / `dmodel` / `gfmodel` / `ultimate` | 上下文档位到 1,000,000（context tier 选择已支持） |
+
+**账号侧配额**：9 个账号 `plan=Free`，额度都在 `addon` 桶里，实测剩余
+12–289 积分/账号（合计约 967）。所以 DeepSeek 转为计价之后，Qoder 这条线
+不再是"零成本"，消耗会直接吃这些 addon 积分。
+
+**实测拥塞**：2026-11-02 用两个账号（余 100 / 余 289）各发一条最小请求，
+`dfmodel`、`dmodel`、`qfmodel`、`gmodel` **全部**返回
+`statusCodeValue=403 / subCode=CALL_COUNT_LIMIT`（`isQueued:true`、
+`serviceAvailable:false`），即此刻整个 Qoder 上游对这些 Free 账号拥塞，
+与选哪个 DeepSeek key 无关。切到付费 id 不会换来可用性。

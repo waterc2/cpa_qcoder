@@ -160,6 +160,23 @@ cmd/cpa-plugin/
 
 ## 上游同步
 
+- 2026-11-02：**上游计价变化**（无新提交，`origin/main` 仍是 `8d49aa6`）。实时
+  `/algo/api/v2/model/list`（9 个部署中的 Global 账号一致）显示 `dfmodel`
+  DeepSeek-Flash `price_factor` **0 → 0.1**——国际版 DeepSeek 免费档已消失，
+  唯一 0 价模型只剩 `qfmodel`（Qwen3.8-Flash）。同步动作：
+  1. `fallbackModels` 兜底表按实测刷新（`dfmodel` 0.1、`ultimate` 2.0、
+     `qmodel_38max` 0.5、`kmodel_latest` → Kimi-K3.1-Pro / 1.0），并补
+     `TestFallbackDeepSeekNotFree` 防止再写回 0（写回会让面板把计价的
+     DeepSeek 继续标成免费）。
+  2. 运行时开关 `<data-dir>/models.json`：`dfmodel` 继续挂
+     `deepseek-v4.1-flash`（现在本身就是计价模型，0.1 是最便宜的 DeepSeek），
+     放开 `dmodel`（DeepSeek-V4-Pro，0.5）并挂别名 `deepseek-v4-pro`，
+     需要 Pro 档时客户端显式点名。
+  3. 实测拥塞：同一时刻 `dfmodel` / `dmodel` / `qfmodel` / `gmodel` 对 Free 计划
+     账号一律 `subCode=CALL_COUNT_LIMIT` 排队，切付费 id 不解决拥塞。
+  行为变更 → 构建 v0.1.6 部署重启。详见 `docs/upstream-notes.md`。
+
+
 - 2026-10-30：合并 `6cae517..8d49aa6`（CALL_COUNT_LIMIT 排队报文被预筛选漏掉）。
   上游把 `parseUpstreamNestedError` 预筛选从匹配带引号的 `"subCode"` 改为匹配
   不带引号的 `subCode`——内层 JSON 嵌在外层 message 字符串里、引号被转义成

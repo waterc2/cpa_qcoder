@@ -6,19 +6,24 @@
 >
 > 部署总览见 `/home/brady/tool/README-cpa.md`。
 >
-> 最近执行：**2026-10-30**，合并上游 `6cae517..8d49aa6`（CALL_COUNT_LIMIT 排队报文被
+> 最近执行：**2026-11-02**，无上游新提交（`origin/main` 已到 `8d49aa6`，本地
+> `cpa-plugin` 已包含）。本次是**上游模型计价变化**的本地跟进：实测 9 个部署中的
+> Global 账号，`dfmodel`（DeepSeek-Flash）`price_factor` 由 **0 → 0.1**，国际版
+> 唯一 0 价模型只剩 `qfmodel`；`ultimate` 0.4→2.0、`qmodel_38max` 0.2→0.5、
+> `kmodel_latest` 更名 Kimi-K3.1-Pro 且 1.4→1.0。据此刷新 `fallbackModels`
+> 兜底表并补 `TestFallbackDeepSeekNotFree`（兜底表若把 DeepSeek 写回 0 即失败），
+> 同时把运行时开关 `~/.qoder2api-cpa/models.json` 改为：`dfmodel` 继续挂
+> `deepseek-v4.1-flash`（已是计价模型，0.1 最便宜）、放开 `dmodel`
+> （DeepSeek-V4-Pro，0.5）并挂别名 `deepseek-v4-pro`。行为变更 → 构建 **v0.1.6**
+> 并部署重启。快照与拥塞实测见 `docs/upstream-notes.md`「2026-11-02 实测快照」。
+> 上次执行：2026-10-30，合并上游 `6cae517..8d49aa6`（CALL_COUNT_LIMIT 排队报文被
 > 预筛选漏掉：`parseUpstreamNestedError` 预筛选改匹配不带引号的 `subCode`，
-> 修复后真排队报文正确进入排队路径，不再误冷却+换号）。上游新增用例断言排队错误
-> 在 `ShouldFailover` 一律不换号，与本地语义 #1 相悷，已改写为本地语义并补
-> `queueWorthSameAccountRetry` 断言 → 行为变更，已重新构建 v0.1.5 并部署重启。
-> （同时入库：2026-10-27 的未推送提交 28e88d9 队列熔断运行时调参。）
-> 上次执行：2026-10-27，合并上游 `872d9b9..6cae517`（队列「首字前一直等」
-> 开关 + 最近排队等待记录）。上游改动与本地语义 #2 直接冲突，已加回
-> `queueWorthSameAccountRetry` gate 并补回归用例
-> `TestStreamWithSlotFakeQueueIgnoresWaitFirstToken` → 行为变更，已重新构建。
-> 上一次实代码合并为 2026-10-23 的 `2671a21..62facdb`（context 档位
-> 200K/400K/1M + 排队重试补全）。
-
+> 修复后真排队报文正确进入排队路径，不再误冷却+换号）→ 行为变更，已构建 v0.1.5
+> 并部署重启。再上一次为 2026-10-27 的 `872d9b9..6cae517`（队列「首字前一直等」
+> 开关 + 最近排队等待记录，与本地语义 #2 冲突，已加回
+> `queueWorthSameAccountRetry` gate）；最近一次实代码合并为 2026-10-23 的
+> `2671a21..62facdb`（context 档位 200K/400K/1M + 排队重试补全）。
+> 
 ---
 
 ## 1. 项目结构与来源
