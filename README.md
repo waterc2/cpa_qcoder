@@ -166,8 +166,7 @@ cmd/cpa-plugin/
   线**（P0=0，P1=5）」，adfb822 就是把那 5 个 P1 补上的提交）。merge `afc8e53`，7 处冲
   突（`README.md`、`account/oauth.go`、`account/region.go`、`checkin.go`、
   `internal/bridge/bridge.go`、`client.go`、`pool.go`）。版本 `0.1.6 → 0.1.7`
-  （`cmd/cpa-plugin/main.go` `pluginVersion`），构建 `dist/qoder-v0.1.7.so`，**未部
-  署**——新默认值太凶，见下条「部署前必读」。
+  （`cmd/cpa-plugin/main.go` `pluginVersion`），构建 `dist/qoder-v0.1.7.so`，**已于 2026-11-10 00:19 部署**——但**先**把下条「部署前必读」里那几项**显式**写进 settings.json 再装产物，所以这次部署并没有改变出站形态。
   **冲突处理（本地语义优先，§3 承重墙不动）**：
   1. `ShouldFailover` **不**对 `ErrTypeUpstreamQueue` 短路。上游把排队错误归进「一律不
      换号」，本地架构相反：池层保持可换号，「不换号」由同账号等待路径 +
@@ -208,12 +207,37 @@ cmd/cpa-plugin/
     **会**经过，超限下调并打日志、不拒请求）；`role=tool` 结果默认**单条 32KB / 总和
     128KB 截断**（`BuildQoderMessages` → `truncateToolResults`，插件路径**会**经过）——
     编码代理的长工具输出会被静默截断，上线前要么调大、要么显式关。
-  - 不生效的部分：`BodyLimitMiddleware`（29MB → 413）只挂在他们自己的 HTTP server 上，
-    插件没有监听器；上游「排队总预算」默认 1800s，但插件从不调 `ApplyQueueSettings`，取
-    包内默认值，而线上 `QODER2API_QUEUE_MAX_WAIT=90s` 远小于它 ⇒ 不起作用。
+  - `BodyLimitMiddleware`（29MB → 413）**不生效**：它只挂在他们自己的 HTTP server 上，
+    插件没有监听器。**但「排队总预算」这条先前的判断是错的，已按实测纠正**：插件确实从不
+    调 `ApplyQueueSettings`，所以取包内默认 1800s——而它管的是 `streamWithSlot` 里
+    **同账号排队重试循环**的总时长，`QODER2API_QUEUE_MAX_WAIT=90s` 管的是**外层换号**，
+    两条是不同的上限，不是同一条被谁盖住。部署后线上日志确认循环按 `budget 30m0s` 走；
+    而 `0.1.6` 在同一条循环上**根本没有总预算**（`QueueWaitFirstToken=true`，只有 ctx
+    取消才停），所以这条对我们是**收紧**，不是放松。
   - **设备指纹不漂移**：`machine_salt` 早在 `f8037f5` 就已在用、线上 settings.json 里
     2026-10-17 就有盐值，本次只是加 `QD_NO_MACHINE_SALT` 逃生口（P1-2，回退到与升级前
     逐字节一致的无盐基准）+ 指纹漂移告警，**无需设 `QD_DEVICE_ID_LEGACY`**。
+
+  **部署与验证（2026-11-10 00:19）**：
+  - 先备份 `~/.qoder2api-cpa/settings.json` → `settings.json.bak-pre-qoder-0.1.7-defaults-20261110-001900`
+    （`plugin_settings.json` 同批备份），再写入显式值把出站形态钉在 `0.1.6`：
+    `traffic_guard=false`（`guardApplies` 让个人 Global 账号**完全跳过租约**：不等、不隔、不拒流；
+    仅团队/企业账号仍受保护）、`auto_throttle=false`、`session_affinity=true` + `ttl 1800`
+    （**这一项有意开**：软偏好，绑定账号冷却/熔断时自然回落普通选号，与本地队列熔断不争；
+    换账号 = 前缀缓存全废 = 全价积分）、`max_output_tokens=131072`、`tool_result_bytes=1048576`、
+    `tool_result_total_bytes=4194304`。`machine_salt` 原样保留——丢掉它就是指纹漂移。
+  - 产物：`qoder-v0.1.6.so` 改名 `qoder-v0.1.6.so.bak-pre-adfb822-traffic-guard-20261110-001905`
+    （同目录只能有一个 `qoder-*.so`，改名同时完成备份与卸载），拷入 `qoder-v0.1.7.so`。
+  - 重启：先 `tr '\0' '\n' < /proc/<旧pid>/environ` 读回线上 env（`QODER2API_QUEUE_MAX_WAIT=90s`、
+    `PER_ACCOUNT_WAIT=30s`、`BREAKER_SESSIONS=2`、`BREAKER_COOLDOWN=10m`），`kill` + `nohup` 纯重启，
+    旧 `app.log` 改名保存而不是截断。
+  - 验证：`plugin registered plugin_id=qoder version=0.1.7`；9 个 Global 账号 auth 重新载入；
+    `GET /v1/models` 200/69；**指纹审计 9 个账号全部 `stable derive`、零漂移告警**（证明与
+    `0.1.6` 同一套派生，`QD_NO_MACHINE_SALT` 无需设置）；无 panic/error；闸门按配置对个人号
+    不生效，日志里没有 guard/throttle 动作，符合预期。
+  - 部署后实况：`qfmodel` / `dfmodel` 正被上游排队（`CALL_COUNT_LIMIT`，前方约 1 人、每次仍说
+    还要 60s，与 2026-11-02 记的拥塞一致）。顺带实测确认：**客户端断开后 host 不会取消插件侧
+    请求**，所以被弃的排队等待会一直跑到预算耗尽——本次冒烟超时留下的两个等待约在 00:50 自行结束。
 
 **上游计价变化**（无新提交，`origin/main` 仍是 `8d49aa6`）。实时
   `/algo/api/v2/model/list`（9 个部署中的 Global 账号一致）显示 `dfmodel`
