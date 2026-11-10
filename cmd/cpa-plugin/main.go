@@ -83,7 +83,7 @@ const (
 )
 
 // pluginVersion is the release version. Overridable with -ldflags -X.
-var pluginVersion = "0.1.6"
+var pluginVersion = "0.1.7"
 
 // hostAPI is the host function-pointer table captured at init. It is used for
 // async host calls (host.stream.emit / host.stream.close / host.auth.*).
