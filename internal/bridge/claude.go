@@ -85,6 +85,9 @@ func (b *Bridge) HandleClaudeMessages(w http.ResponseWriter, r *http.Request) {
 	if mt, ok := req["max_tokens"].(float64); ok && int(mt) > 0 {
 		opts.MaxTokens = int(mt)
 	}
+	// 显式会话键（Claude Code 的 metadata.user_id 等约定）：带上它，
+	// 同一会话的多轮请求才能粘同一个账号（见 affinity.go）。
+	opts.SessionKey = explicitSessionKey(req)
 
 	logger.Info("[Claude][%s] model=%s stream=%v tools=%v thinking=%v effort=%s budget=%d max_tokens=%d msgs=%d", reqID, model, stream, toolsEnabled, opts.IsReasoning, opts.ReasoningEffort, opts.ThinkingBudget, opts.MaxTokens, len(incomingMsgs))
 

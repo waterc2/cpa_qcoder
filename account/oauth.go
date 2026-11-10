@@ -139,7 +139,7 @@ func WaitLogin(loginID string) (*Account, error) {
 			logger.Info("OAuth: Cancelled")
 			return nil, fmt.Errorf("oauth login cancelled")
 		case <-ticker.C:
-			deviceToken, refreshToken, err := pollToken(p.nonce, p.verifier, ep)
+			deviceToken, refreshToken, err := pollToken(p.nonce, p.verifier, ep, p.region)
 			if err != nil {
 				continue
 			}
@@ -178,7 +178,7 @@ func PollLoginOnce(loginID string) (*Account, string, bool, error) {
 	}
 
 	ep := GetEndpoints(p.region)
-	deviceToken, refreshToken, err := pollToken(p.nonce, p.verifier, ep)
+	deviceToken, refreshToken, err := pollToken(p.nonce, p.verifier, ep, p.region)
 	if err != nil {
 		return nil, "", false, nil // still pending
 	}
@@ -209,8 +209,9 @@ func CancelLogin(loginID string) {
 	}
 }
 
-// pollToken 轮询 deviceToken/poll 端点
-func pollToken(nonce, verifier string, ep Endpoints) (string, string, error) {
+// pollToken 轮询 deviceToken/poll 端点（按区域代理出口——设备登录属于
+// 「账号 ID 之前」的阶段，只能按区域绑定；直连会与对话流量形成双出口）。
+func pollToken(nonce, verifier string, ep Endpoints, region Region) (string, string, error) {
 	reqURL := fmt.Sprintf("%s?nonce=%s&verifier=%s&challenge_method=S256",
 		ep.PollEndpoint,
 		url.QueryEscape(nonce),
@@ -218,7 +219,11 @@ func pollToken(nonce, verifier string, ep Endpoints) (string, string, error) {
 
 	logger.Debug("OAuth: Polling %s", ep.PollEndpoint)
 
-	resp, err := http.Get(reqURL)
+	client, err := RegionHTTPClient(region, 30*time.Second)
+	if err != nil {
+		return "", "", fmt.Errorf("region proxy config invalid: %w", err)
+	}
+	resp, err := client.Get(reqURL)
 	if err != nil {
 		logger.Error("OAuth: Poll error: %v", err)
 		return "", "", err
@@ -279,11 +284,11 @@ func buildAccountFromToken(deviceToken, refreshToken string, region Region, ep E
 // CPA 插件把凭证存进 host auth store，不需要独立服务的文件存储。
 func BuildAccountFromToken(deviceToken, refreshToken string, region Region) (*Account, error) {
 	ep := GetEndpoints(region)
-	info, err := fetchUserInfo(deviceToken, ep)
+	info, err := fetchUserInfo(deviceToken, ep, region)
 	if err != nil {
 		return nil, fmt.Errorf("fetch user info: %w", err)
 	}
-	plan := fetchPlan(deviceToken, ep)
+	plan := fetchPlan(deviceToken, ep, region)
 
 	id := SanitizeID(strGet(info, "userId") + strGet(info, "email"))
 	if id == "" {
@@ -304,10 +309,15 @@ func BuildAccountFromToken(deviceToken, refreshToken string, region Region) (*Ac
 	}, nil
 }
 
-func fetchUserInfo(token string, ep Endpoints) (map[string]interface{}, error) {
+// fetchUserInfo 拉取 userinfo（账号 ID 之前的阶段，按区域代理出口）。
+func fetchUserInfo(token string, ep Endpoints, region Region) (map[string]interface{}, error) {
 	req, _ := http.NewRequest("GET", ep.UserinfoBase, nil)
 	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := http.DefaultClient.Do(req)
+	client, err := RegionHTTPClient(region, 15*time.Second)
+	if err != nil {
+		return nil, fmt.Errorf("region proxy config invalid: %w", err)
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -318,10 +328,16 @@ func fetchUserInfo(token string, ep Endpoints) (map[string]interface{}, error) {
 	return result, nil
 }
 
-func fetchPlan(token string, ep Endpoints) string {
+// fetchPlan 拉取套餐信息（同 fetchUserInfo：按区域代理出口）。
+func fetchPlan(token string, ep Endpoints, region Region) string {
 	req, _ := http.NewRequest("GET", ep.PlanEndpoint, nil)
 	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := quotaClient.Do(req)
+	client, err := RegionHTTPClient(region, 15*time.Second)
+	if err != nil {
+		logger.Error("fetchPlan: region proxy config invalid: %v", err)
+		return ""
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return ""
 	}
@@ -364,7 +380,14 @@ func FetchQuota(token string, region Region) (*QuotaInfo, error) {
 	ep := GetEndpoints(region)
 	req, _ := http.NewRequest("GET", ep.QuotaEndpoint, nil)
 	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := quotaClient.Do(req)
+	// 额度查询同样按区域代理出口：账号操作直连会与对话流量形成双出口
+	// （上游 P1-5）。本地旧写法用 quotaClient 只是为了给面板的批量额度
+	// 刷新设上限，RegionHTTPClient 同样带超时，不丢那层保护。
+	client, err := RegionHTTPClient(region, 30*time.Second)
+	if err != nil {
+		return nil, fmt.Errorf("region proxy config invalid: %w", err)
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -376,7 +399,7 @@ func FetchQuota(token string, region Region) (*QuotaInfo, error) {
 		return nil, err
 	}
 
-	return ParseQuotaPayload(result, fetchPlan(token, ep)), nil
+	return ParseQuotaPayload(result, fetchPlan(token, ep, region)), nil
 }
 
 // ParseQuotaPayload turns a /api/v2/quota/usage (or unwrapped
@@ -390,6 +413,9 @@ func ParseQuotaPayload(result map[string]interface{}, plan string) *QuotaInfo {
 	}
 
 	info := &QuotaInfo{
+		// plan 是本地把「拉套餐名」从解析器里抽出来的参数（让 AvailableCredits
+		// 聚合能在不联网的情况下单测）；上游写死在字面量里 fetchPlan(...)。
+		// 参数形态保留，region 版 fetchPlan 在上面的调用点传入。
 		Plan:            plan,
 		IsQuotaExceeded: result["isQuotaExceeded"] == true,
 		ExpiresAt:       int64(toFloat(result, "expiresAt")),

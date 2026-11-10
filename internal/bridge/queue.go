@@ -418,13 +418,13 @@ func (b *Bridge) waitForQueue(ctx context.Context, slot *Slot, qe *QueueError, r
 // slot until the model frees up or deadline elapses. Empty/fake queue signals
 // are returned immediately so the caller can fail over to another account or
 // provider instead of hanging for the full wait budget.
-func (b *Bridge) streamWithQueueRecovery(ctx context.Context, slot *Slot, qurl string, body map[string]interface{}, extra map[string]string, deadline time.Time, onDelta func(Delta)) (bool, error) {
+func (b *Bridge) streamWithQueueRecovery(ctx context.Context, slot *Slot, qurls []string, body map[string]interface{}, extra map[string]string, deadline time.Time, onDelta func(Delta)) (bool, error) {
 	emittedAny := false
 	queuedOnce := false
 	retriedAfterAvailable := false
 	startedAt := time.Now()
 	for {
-		emitted, err := b.streamWithSlot(ctx, slot, qurl, body, extra, onDelta)
+		emitted, err := b.streamWithSlot(ctx, slot, qurls, body, extra, onDelta)
 		emittedAny = emittedAny || emitted
 		if err == nil {
 			if queuedOnce {
