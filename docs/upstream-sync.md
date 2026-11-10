@@ -6,7 +6,31 @@
 >
 > 部署总览见 `/home/brady/tool/README-cpa.md`。
 >
-> 最近执行：**2026-11-02**，无上游新提交（`origin/main` 已到 `8d49aa6`，本地
+> 最近执行：**2026-11-09**，上游 `origin/main` 新提交 `adfb822`「traffic guard,
+> risk-control hardening + security audit fixes」——**已合并**（merge `afc8e53`，7 处
+> 冲突），版本 `0.1.6 → 0.1.7`，构建 `dist/qoder-v0.1.7.so`，**未部署**。这一轮是上游
+> 账号池风控 + 本地封控的整轮改动，随提交带进 `docs/audit-2026-11.md`（2026-11 安全审
+> 计，总结论「不建议直接上线，P1=5」，adfb822 正是补那 5 个 P1 的提交）。§3 承重墙全部
+> 保住：`ShouldFailover` 不对 `ErrTypeUpstreamQueue` 短路（排队错误在池层仍可换号，上
+> 游新增的同类断言按本地语义改写）、本地 `streamWithQueueRecovery` 保留并接上游端点候
+> 选（`endpoints.go`）、`CallOpts` 本地字段 + 上游 `SessionKey`、导出
+> `account.BuildAccountFromToken` / `ParseQuotaPayload(result, plan)` 形态不变、per-slot
+> 签到状态机保留并接上游 `CheckinAllAt(base)` 错峰、`queueEnvelopeFrame` 补
+> `queueCount`/`serviceAvailable`（本地只有真队列才排队，缺这两字段假队列会被一路等下
+> 去）。`go build/vet/test ./...` + `-race`（根包、`internal/bridge`、`cmd/cpa-plugin`）
+> 全绿。**为什么压着不部署**：上游把 `traffic_guard` / `auto_throttle` /
+> `session_affinity` 从 `bool` 改成 `*bool` 且 **缺字段 = 默认开**（审计 P1-3），而线上
+> `~/.qoder2api-cpa/settings.json` 不含这三个字段 ⇒ 部署即开：单账号并发默认 **1**（完全
+> 串行）+ 400ms 最小间隔 + ≤120ms 抖动、闸门等 30s 后软放行到 limit×2 再超就**拒流**；
+> 自适应节流默认开且**只严不松**；上游自带会话亲和（TTL 1800s）与本地
+> `QODER2API_QUEUE_BREAKER_SESSIONS=2` 是两条独立机制、需先确认不打架；`max_tokens` 默认
+> 夹 32768、`role=tool` 结果默认单条 32KB／总和 128KB **静默截断**（两处都在共享 bridge
+> 路径上，插件路径会经过）。要上线就先把这些值按现状写进 settings.json，再走「备份 → 覆
+> 盖 → 带线上 `QODER2API_QUEUE_*` env 纯重启 → 查 `plugin registered plugin_id=qoder
+> version=0.1.7`」。设备指纹**不漂移**（`machine_salt` 自 `f8037f5` 就在用、线上 2026-10-17
+> 已有盐，本次只加 `QD_NO_MACHINE_SALT` 逃生口与漂移告警，`QD_DEVICE_ID_LEGACY` 不需要）。
+> 完整合并记录与逐条冲突处置见 README「上游同步」2026-11-09 条。
+> 上次执行：**2026-11-02**，无上游新提交（`origin/main` 已到 `8d49aa6`，本地
 > `cpa-plugin` 已包含）。本次是**上游模型计价变化**的本地跟进：实测 9 个部署中的
 > Global 账号，`dfmodel`（DeepSeek-Flash）`price_factor` 由 **0 → 0.1**，国际版
 > 唯一 0 价模型只剩 `qfmodel`；`ultimate` 0.4→2.0、`qmodel_38max` 0.2→0.5、

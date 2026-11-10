@@ -160,7 +160,62 @@ cmd/cpa-plugin/
 
 ## 上游同步
 
-- 2026-11-02：**上游计价变化**（无新提交，`origin/main` 仍是 `8d49aa6`）。实时
+- 2026-11-09：合并 `ce6ae9d..adfb822`（`feat(bridge): traffic guard, risk-control
+  hardening + security audit fixes`——账号池风控 + 本地封控一整轮，含随提交一起进来的
+  `docs/audit-2026-11.md` 安全审计 P1/P2/P3 修复；该审计自己的总结论是「**不建议直接上
+  线**（P0=0，P1=5）」，adfb822 就是把那 5 个 P1 补上的提交）。merge `afc8e53`，7 处冲
+  突（`README.md`、`account/oauth.go`、`account/region.go`、`checkin.go`、
+  `internal/bridge/bridge.go`、`client.go`、`pool.go`）。版本 `0.1.6 → 0.1.7`
+  （`cmd/cpa-plugin/main.go` `pluginVersion`），构建 `dist/qoder-v0.1.7.so`，**未部
+  署**——新默认值太凶，见下条「部署前必读」。
+  **冲突处理（本地语义优先，§3 承重墙不动）**：
+  1. `ShouldFailover` **不**对 `ErrTypeUpstreamQueue` 短路。上游把排队错误归进「一律不
+     换号」，本地架构相反：池层保持可换号，「不换号」由同账号等待路径 +
+     `queueWorthSameAccountRetry` 完成。上游为此新增的回归用例（凭证/额度类断言）按本地
+     语义改写：`ErrTypeTokenExpired` / `ErrTypeModelNotAllowed` 仍然换号，停号交给
+     `ClassifyFail` 的 `needs_reauth` / `FailClassModelNotAllowed`。
+  2. 本地 `streamWithQueueRecovery` 保留，把上游新的端点候选与故障转移（`endpoints.go`）
+     接进去；`callGetCtx` 保持 context 感知并嫁接上游端点 failover；`InferenceBase` 保留。
+  3. `CallOpts` 本地字段全保留，新增上游 `SessionKey`（会话亲和的键）。
+  4. 导出 API `account.BuildAccountFromToken` 与可测形态 `ParseQuotaPayload(result, plan)`
+     保留（插件侧调用点依赖）。
+  5. 上游区域感知 HTTP 客户端（`RegionHTTPClient`，P1-5：签到/换 token/查额度与对话共用
+     Transport）采纳；本地 **per-slot 签到重试状态机**保留，并接上游 per-account 错峰
+     `CheckinAllAt(base)`；`pollToken` 调用点补上新增的 `region` 参数。
+  6. `queueEnvelopeFrame` 补 `queueCount` / `serviceAvailable` 两个字段——本地语义下
+     **只有真队列才排队**，信封若不带这两个字段，上游形态的假队列
+     （`queueCount=0 && serviceAvailable=false`）在本地会被一路等到客户端断开。
+  7. 上游测试跟改：`streamWithSlot` 参数已是 `[]string` URL 列表；队列预算测试改为直接
+     跑 `streamWithSlot`（插件路径不经他们的 HTTP 层）；顺手修了上游一处 `logger.Warn`
+     双重格式化。
+  验证：`go build ./...`、`go vet ./...`、`go test ./...` 全绿；`-race` 覆盖根包、
+  `internal/bridge`、`cmd/cpa-plugin` 全绿；产物内版本用 `strings` 严格匹配确认 0.1.7。
+
+  **部署前必读（`0.1.7` 会改变出站行为）**——上游把三个保护开关从 `bool` 改成 `*bool`
+  并声明 **缺字段 = 默认开**（审计 P1-3：旧行为是「宣称有保护、实际默认没开」），而线上
+  `~/.qoder2api-cpa/settings.json` 里**没有**这三个字段，所以「部署即开」：
+  - **流量闸门**（`traffic_guard`）：默认 `DefaultConcurrencyPerAccount = 1`——**单账号完全
+    串行**；相邻请求强制最小间隔 400ms + ≤120ms 真随机抖动；闸门等待默认 30s；过载时软
+    放行上限 = limit×2（最少 2 个），超过即**拒流**。多客户端同时用 Qoder 时要先按现状
+    并发把 `concurrency_per_account` 写进 settings.json，否则表现为「请求排队 30s 后被拒」。
+  - **自适应节流**（`auto_throttle`）：生效并发 = min(用户配置, 自适应)，生效间隔 =
+    max(用户配置, 自适应)——**只严不松**（窗口 300s、排队率 5%、频控率 2%、降档间隔
+    1500ms）。
+  - **上游自带会话亲和**（`session_affinity`，TTL 1800s，排队等待期间不换号即不换绑定）：
+    与本地 `QODER2API_QUEUE_BREAKER_SESSIONS=2`「连续排队就换号」是两条独立机制，上线前
+    必须先确认两者不打架。
+  - `max_tokens` 默认夹到 **32768**（`ClampMaxTokens` 在共享 bridge 请求构造里，插件路径
+    **会**经过，超限下调并打日志、不拒请求）；`role=tool` 结果默认**单条 32KB / 总和
+    128KB 截断**（`BuildQoderMessages` → `truncateToolResults`，插件路径**会**经过）——
+    编码代理的长工具输出会被静默截断，上线前要么调大、要么显式关。
+  - 不生效的部分：`BodyLimitMiddleware`（29MB → 413）只挂在他们自己的 HTTP server 上，
+    插件没有监听器；上游「排队总预算」默认 1800s，但插件从不调 `ApplyQueueSettings`，取
+    包内默认值，而线上 `QODER2API_QUEUE_MAX_WAIT=90s` 远小于它 ⇒ 不起作用。
+  - **设备指纹不漂移**：`machine_salt` 早在 `f8037f5` 就已在用、线上 settings.json 里
+    2026-10-17 就有盐值，本次只是加 `QD_NO_MACHINE_SALT` 逃生口（P1-2，回退到与升级前
+    逐字节一致的无盐基准）+ 指纹漂移告警，**无需设 `QD_DEVICE_ID_LEGACY`**。
+
+**上游计价变化**（无新提交，`origin/main` 仍是 `8d49aa6`）。实时
   `/algo/api/v2/model/list`（9 个部署中的 Global 账号一致）显示 `dfmodel`
   DeepSeek-Flash `price_factor` **0 → 0.1**——国际版 DeepSeek 免费档已消失，
   唯一 0 价模型只剩 `qfmodel`（Qwen3.8-Flash）。同步动作：
