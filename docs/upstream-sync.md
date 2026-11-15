@@ -15,10 +15,18 @@
 > 另按上游 2026-11-14 实拉快照刷新插件兜底表 `fallbackModels`：`qfmodel` 限免结束
 > 0→0.1（**这张表里已经没有任何 0 价模型**）、`qmodel_latest` 实为 Qwen4-Max-Preview
 > （0.1 / 推理 / 32K）、补 `jmodel` Step-5-Preview、`mmodel` 输出 16K→32K 且改推理。
-> 行为变更 ⇒ 版本 `0.1.7 → 0.1.8`，构建 `dist/qoder-v0.1.8.so`，**尚未部署**（线上仍是
-> `0.1.7`）。**装 0.1.8 前先读 README 2026-11-14 条**：`jmodel` 不在运行时
-> `~/.qoder2api-cpa/models.json` 的 denylist 里，装上即对客户端可见，而上游当时正拥塞
-> （10605 isQueued）。本轮无新增「缺字段=默认开」的配置项（上游只动 `oauth.go`/
+> 行为变更 ⇒ 版本 `0.1.7 → 0.1.8`，构建 `dist/qoder-v0.1.8.so`，**已于 2026-11-14
+> 19:49:47 部署**（`0.1.7` 备份
+> `qoder-v0.1.7.so.bak-pre-5bd4083-catalog-20261114-194924`；从 `/proc/2595/environ`
+> 读回原环境与原 argv 后 `kill -TERM` + 纯重启，不经 `start_cpa.sh`；pid 2595 →
+> **85036**；`QODER2API_QUEUE_*` 四项原样：`90s`/`30s`/`2`/`10m`）。验证：loaded 与
+> registered 都是 `0.1.8`、四个插件全注册、`/v1/models` 200/63、**重启前后 9 个
+> `machineid` 完全一致（零指纹漂移）**。**不需要改 `~/.qoder2api-cpa/models.json`**：
+> 担心 `jmodel` 装上即默认可见，但实测 `/v1/models` 里没 `jmodel`——插件从上游拉到的
+> **活**清单本身就没下发它，新兜底表只在首查前/上游不可达时生效。
+> 部署当下 `qfmodel` 上游拥塞（`403 / CALL_COUNT_LIMIT` 真队列），插件同账号等 30s
+> 重试、会话亲和保持，客户端 150s 断开后**重试循环自行停下**——修正 2026-11-10
+> 「客户端断开不会取消插件侧等待」那条（host 8.0.71 + 0.1.8 上取消会传播）。本轮无新增「缺字段=默认开」的配置项（上游只动 `oauth.go`/
 > `bridge.go`/`claude.go`/`service.go`/控制台，`settings.json` 字段零变化）。
 > 历史逐轮记录见 README「上游同步」节（2026-11-14 / 11-09 / 11-02 / 10-30 / 10-27 / 10-23）；
 > 线上 `settings.json` 的钉值（`traffic_guard=false`、`auto_throttle=false`、

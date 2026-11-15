@@ -162,8 +162,31 @@ cmd/cpa-plugin/
 
 - 2026-11-14：合并上游 `adfb822..5bd4083`（`feat(bridge): refresh upstream model list
   + fix re-auth wiping device fingerprint`，上游 2026-11-13 CN / 2026-11-14 Global
-  实拉）。merge `7b8cbb3`，3 处冲突。**未部署**：已构建 `dist/qoder-v0.1.8.so`，线上
-  仍是 `0.1.7`。
+  实拉）。merge `7b8cbb3`，3 处冲突。**已于 2026-11-14 19:49:47 部署**：旧产物改名
+  `qoder-v0.1.7.so.bak-pre-5bd4083-catalog-20261114-194924`，拷入
+  `qoder-v0.1.8.so`（sha256 `666f1f9b…ce4816`，与构建产物一致），从
+  `/proc/2595/environ`+`cmdline` 读回原环境/原 argv 后 `kill -TERM` + 纯重启（不经
+  `start_cpa.sh`，不触发 host 更新检查；pid 2595 → **85036**，`app.pid` 已更新，
+  `QODER2API_QUEUE_*` 四项原样：`MAX_WAIT=90s` / `PER_ACCOUNT_WAIT=30s` /
+  `BREAKER_SESSIONS=2` / `BREAKER_COOLDOWN=10m`）。重启前先备份
+  `app.log.bak-pre-deploy-0.1.8-20261114-194924`。
+  **验证**：`plugin loaded` 与 `plugin registered` 都是 **`version=0.1.8`**（ldflag 生效）；
+  4 个插件全部重新注册（qoder 0.1.8 / workbuddy 0.16 / clinepassbridge 0.4.7 /
+  grok2api-egress 1.2.0）；3002 在听；`GET /v1/models` 200/63；9 个 qoder auth 全部载入；
+  本轮**无任何 error/panic**（`model registration … superseded during computation` 那条
+  warn 上一轮启动就有，host 侧噪声，与插件版本无关）；**指纹零漂移**——重启前后 9 个
+  `machineid` 完全一致（这正是本轮合入的 `preserveDeviceIdentity` 需要盯的点）。
+  **`jmodel` 实际并没有暴露**（与上面「部署前必读」的担心相反）：`/v1/models` 63 个
+  条目里没有 `jmodel`——插件拉到的**活**清单（`ListAvailableModels`，本轮新改的逐账号
+  区域限域试错路径，启动时对 9 个账号都跑通了）本来就没有下发 `jmodel`，运行时
+  `models.json` 的 `disabled` 是否列它就无关紧要了；新兜底表只在「首查前 / 上游不可
+  达」时生效。所以**不需要**改 `models.json`。
+  **部署当下上游拥塞**：拿 `qfmodel` 发了一条 8-token 试探请求，上游返
+  `403 / CALL_COUNT_LIMIT`（`前方约 1 人`，真队列），插件按本地语义**同账号等 30s 重试**
+  （预算 30m0s，会话亲和保持），客户端 150s 超时断开后**重试循环自己停了**（最后一
+  次 try 6 与断开时刻对齐）。这修正了 2026-11-10 那条「客户端断开后 host **不会**取消
+  插件侧请求，被弃的等待会跑到预算耗尽」——在 host **8.0.71** + `0.1.8` 上取消是会传播
+  的。拥塞与选哪个 key 无关（2026-11-02 / 11-10 都记过同一现象）。
   **插件路径真正受用的只有两条**：
   1. `ListAvailableModels` 现在会在**本桥区域内**逐账号试错（上游以前只用池里第一个
      坑位，一个死凭证 `403 Signature invalid` 就把 `/v1/models` 拖到静态兜底表）。
@@ -191,10 +214,11 @@ cmd/cpa-plugin/
   `TestFallbackCatalogMatches20261114Snapshot`，`TestFallbackDeepSeekNotFree` 去掉已过
   时的 `qfmodel=0` 断言。快照来自上游实拉，本仓库未独立重拉（首次真查询会用活清单覆
   盖兜底表），细节见 `docs/upstream-notes.md`。
-  **部署前必读**：运行时 `~/.qoder2api-cpa/models.json` 的 `disabled` 里**没有**
-  `jmodel`，装上 0.1.8 后它对客户端就默认可见；上游当时报 `qmodel_latest`/`jmodel`
-  正拥塞（10605 `isQueued`，属容量不是故障）。要保守就先把 `jmodel` 加进 `disabled`
-  再装产物。本轮**没有**新的「缺字段 = 默认开」配置项（上游只动
+  **部署前必读（本条已实测推翻，见本条开头的验证段）**：当时担心运行时
+  `~/.qoder2api-cpa/models.json` 的 `disabled` 里**没有** `jmodel`，装上 0.1.8 后它会对
+  客户端默认可见（上游当时报 `qmodel_latest`/`jmodel` 正拥塞，`10605 isQueued`，属
+  容量不是故障）。实际装完 `/v1/models` 63 条里**没** `jmodel`：插件拉到的活清单本来
+  就没下发它，新兜底表只在首查前/上游不可达时生效，所以 `models.json` 无需改。本轮**没有**新的「缺字段 = 默认开」配置项（上游只动
   `oauth.go`/`bridge.go`/`claude.go`/`service.go`/控制台，`settings.json` 字段零变化）。
   冲突处理：README 取本地精简版（上游 1036 行版丢弃）；`account/oauth.go` 保住
   `BuildAccountFromToken` 导出形态；`bridge.go` 两个结构体字段都留（上游
