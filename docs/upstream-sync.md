@@ -6,59 +6,25 @@
 >
 > 部署总览见 `/home/brady/tool/README-cpa.md`。
 >
-> 最近执行：**2026-11-09**，上游 `origin/main` 新提交 `adfb822`「traffic guard,
-> risk-control hardening + security audit fixes」——**已合并**（merge `afc8e53`，7 处
-> 冲突），版本 `0.1.6 → 0.1.7`，构建 `dist/qoder-v0.1.7.so`，**已于 2026-11-10 00:19 部署**（上线前先把下面那几个新默认值显式钉进 settings.json，所以出站形态与 `0.1.6` 一致）。这一轮是上游
-> 账号池风控 + 本地封控的整轮改动，随提交带进 `docs/audit-2026-11.md`（2026-11 安全审
-> 计，总结论「不建议直接上线，P1=5」，adfb822 正是补那 5 个 P1 的提交）。§3 承重墙全部
-> 保住：`ShouldFailover` 不对 `ErrTypeUpstreamQueue` 短路（排队错误在池层仍可换号，上
-> 游新增的同类断言按本地语义改写）、本地 `streamWithQueueRecovery` 保留并接上游端点候
-> 选（`endpoints.go`）、`CallOpts` 本地字段 + 上游 `SessionKey`、导出
-> `account.BuildAccountFromToken` / `ParseQuotaPayload(result, plan)` 形态不变、per-slot
-> 签到状态机保留并接上游 `CheckinAllAt(base)` 错峰、`queueEnvelopeFrame` 补
-> `queueCount`/`serviceAvailable`（本地只有真队列才排队，缺这两字段假队列会被一路等下
-> 去）。`go build/vet/test ./...` + `-race`（根包、`internal/bridge`、`cmd/cpa-plugin`）
-> 全绿。上线前必须先钉的默认值（已按此执行）：上游把 `traffic_guard` / `auto_throttle` /
-> `session_affinity` 从 `bool` 改成 `*bool` 且 **缺字段 = 默认开**（审计 P1-3），而线上
-> `~/.qoder2api-cpa/settings.json` 原本不含这三个字段 ⇒ 裸部署即开：单账号并发默认 **1**（完全
-> 串行）+ 400ms 最小间隔 + ≤120ms 抖动、闸门等 30s 后软放行到 limit×2 再超就**拒流**；自适应节流
-> 默认开且**只严不松**；`max_tokens` 默认夹 32768、`role=tool` 结果默认单条 32KB／总和 128KB
-> **静默截断**（两处都在共享 bridge 路径上，插件路径会经过）。实际执行顺序：先备份 settings.json
-> （`settings.json.bak-pre-qoder-0.1.7-defaults-20261110-001900`）再写显式值
-> `traffic_guard=false`（`guardApplies` 让个人 Global 账号完全跳过租约）、`auto_throttle=false`、
-> `session_affinity=true` + `ttl 1800`（有意开：软偏好，账号冷却/熔断时自然回落普通选号，与本地
-> `QODER2API_QUEUE_BREAKER_SESSIONS=2` 不争；换账号=前缀缓存全废=全价积分）、`max_output_tokens=131072`、
-> `tool_result_bytes=1048576`、`tool_result_total_bytes=4194304`；`machine_salt` 原样保留（丢掉就是
-> 指纹漂移）。然后 `qoder-v0.1.6.so` 改名 `…so.bak-pre-adfb822-traffic-guard-20261110-001905`（同目录
-> 只能有一个 `qoder-*.so`）、拷入 `qoder-v0.1.7.so`、从 `/proc/<旧pid>/environ` 读回线上
-> `QODER2API_QUEUE_*` 后 `kill` + `nohup` 纯重启。验证：registered `version=0.1.7`、9 个账号 auth 载入、
-> `GET /v1/models` 200/69、**9 个账号指纹全部 `stable derive`、零漂移告警**、无 panic/error、
-> 日志无 guard/throttle 动作（符合配置）。另纠正本文先前一处判断：「排队总预算 1800s 不起作用」是**错的**——
-> 它管的是 `streamWithSlot` 的同账号排队循环，`QODER2API_QUEUE_MAX_WAIT=90s` 管的是外层换号，两条互不
-> 覆盖；而 `0.1.6` 在同一条循环上**没有任何总预算**，所以 1800s 这条对我们是**收紧**。部署当下
-> `qfmodel`/`dfmodel` 正被上游排队（与 2026-11-02 记的拥塞一致）；实测确认客户端断开后 host **不会**取消
-> 插件侧请求，被弃的等待会跑到预算耗尽才停。完整合并记录、逐条冲突处置与部署细节见 README
-> 「上游同步」2026-11-09 条。设备指纹**不漂移**（`machine_salt` 自 `f8037f5` 就在用、线上 2026-10-17
-> 已有盐，本次只加 `QD_NO_MACHINE_SALT` 逃生口与漂移告警，`QD_DEVICE_ID_LEGACY` 不需要）。
-> 完整合并记录与逐条冲突处置见 README「上游同步」2026-11-09 条。
-> 上次执行：**2026-11-02**，无上游新提交（`origin/main` 已到 `8d49aa6`，本地
-> `cpa-plugin` 已包含）。本次是**上游模型计价变化**的本地跟进：实测 9 个部署中的
-> Global 账号，`dfmodel`（DeepSeek-Flash）`price_factor` 由 **0 → 0.1**，国际版
-> 唯一 0 价模型只剩 `qfmodel`；`ultimate` 0.4→2.0、`qmodel_38max` 0.2→0.5、
-> `kmodel_latest` 更名 Kimi-K3.1-Pro 且 1.4→1.0。据此刷新 `fallbackModels`
-> 兜底表并补 `TestFallbackDeepSeekNotFree`（兜底表若把 DeepSeek 写回 0 即失败），
-> 同时把运行时开关 `~/.qoder2api-cpa/models.json` 改为：`dfmodel` 继续挂
-> `deepseek-v4.1-flash`（已是计价模型，0.1 最便宜）、放开 `dmodel`
-> （DeepSeek-V4-Pro，0.5）并挂别名 `deepseek-v4-pro`。行为变更 → 构建 **v0.1.6**
-> 并部署重启。快照与拥塞实测见 `docs/upstream-notes.md`「2026-11-02 实测快照」。
-> 上次执行：2026-10-30，合并上游 `6cae517..8d49aa6`（CALL_COUNT_LIMIT 排队报文被
-> 预筛选漏掉：`parseUpstreamNestedError` 预筛选改匹配不带引号的 `subCode`，
-> 修复后真排队报文正确进入排队路径，不再误冷却+换号）→ 行为变更，已构建 v0.1.5
-> 并部署重启。再上一次为 2026-10-27 的 `872d9b9..6cae517`（队列「首字前一直等」
-> 开关 + 最近排队等待记录，与本地语义 #2 冲突，已加回
-> `queueWorthSameAccountRetry` gate）；最近一次实代码合并为 2026-10-23 的
-> `2671a21..62facdb`（context 档位 200K/400K/1M + 排队重试补全）。
-> 
+> 最近执行：**2026-11-14**，上游 `origin/main` 新提交 `5bd4083`「模型清单刷新 + 重新授权
+> 抹掉设备指纹修复」——**已合并**（merge `7b8cbb3`，3 处冲突：README 取本地精简版；
+> `account/oauth.go` 保住本地 `BuildAccountFromToken` 拆分并把 `preserveDeviceIdentity`
+> 放进唯一覆盖账号文件的 `buildAccountFromToken`；`bridge.go` 保住本地 `Identity()`/
+> `Email()`/`Region()` 的 nil 守卫与 `email` 字段）。§3 承重墙所在文件（`pool.go`/
+> `queue.go`、`account/model.go`、`errors.go`、`cmd/cpa-plugin/`）本轮上游零改动。
+> 另按上游 2026-11-14 实拉快照刷新插件兜底表 `fallbackModels`：`qfmodel` 限免结束
+> 0→0.1（**这张表里已经没有任何 0 价模型**）、`qmodel_latest` 实为 Qwen4-Max-Preview
+> （0.1 / 推理 / 32K）、补 `jmodel` Step-5-Preview、`mmodel` 输出 16K→32K 且改推理。
+> 行为变更 ⇒ 版本 `0.1.7 → 0.1.8`，构建 `dist/qoder-v0.1.8.so`，**尚未部署**（线上仍是
+> `0.1.7`）。**装 0.1.8 前先读 README 2026-11-14 条**：`jmodel` 不在运行时
+> `~/.qoder2api-cpa/models.json` 的 denylist 里，装上即对客户端可见，而上游当时正拥塞
+> （10605 isQueued）。本轮无新增「缺字段=默认开」的配置项（上游只动 `oauth.go`/
+> `bridge.go`/`claude.go`/`service.go`/控制台，`settings.json` 字段零变化）。
+> 历史逐轮记录见 README「上游同步」节（2026-11-14 / 11-09 / 11-02 / 10-30 / 10-27 / 10-23）；
+> 线上 `settings.json` 的钉值（`traffic_guard=false`、`auto_throttle=false`、
+> `session_affinity=true`+1800s、`max_output_tokens=131072`、`tool_result_bytes=1048576`、
+> `tool_result_total_bytes=4194304`、`machine_salt` 勿动）以文件本身为准。
+
 ---
 
 ## 1. 项目结构与来源

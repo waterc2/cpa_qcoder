@@ -139,3 +139,50 @@ SOTA 专属积分等「专属资源包」会单独出现在额度查询结果里
 `statusCodeValue=403 / subCode=CALL_COUNT_LIMIT`（`isQueued:true`、
 `serviceAvailable:false`），即此刻整个 Qoder 上游对这些 Free 账号拥塞，
 与选哪个 DeepSeek key 无关。切到付费 id 不会换来可用性。
+
+## 国际版 · 2026-11-14 上游实拉快照（限免结束 + 两个新模型）
+
+> ⚠️ **来源与上一节不同**：本节数字来自上游 `Zhengyuuuui/qoder2api` commit
+> `5bd4083` 的实拉（README 标注 2026-11-13 拉 CN、2026-11-14 拉 Global，账号
+> `yusheng zheng`，旧协议 `clienttype=5` / `version=1.0.10`），**本仓库没有用自己的
+> 9 个账号独立重拉**。用作兜底表没问题（任何 auth 的首次真查询都会用活清单覆盖
+> `fallbackModels`），但把它当"本地实测"读就错了。
+
+Global（Bridge `8964`）13 个，插件兜底表 `fallbackModels` 已按此刷新：
+
+| Key | 显示名 | price_factor | max_output | 推理 |
+|-----|--------|:------------:|:----------:|:----:|
+| `auto` | Auto | 0.5 | 16,384 | — |
+| `ultimate` | Ultimate | 2 | 32,768 | ✅ |
+| `efficient` | Efficient | 0.3 | 16,384 | — |
+| `qmodel_38max` | Qwen3.8-Max | 0.5 | 32,768 | ✅ |
+| `qfmodel` | Qwen3.8-Flash | **0.1** 💰 | 32,768 | ✅ |
+| `dmodel` | DeepSeek-V4-Pro | 0.5 | 32,768 | ✅ |
+| `dfmodel` | DeepSeek-Flash | 0.1 | 32,768 | ✅ |
+| `gmodel` | GLM-5.3 | 0.8 | 32,768 | ✅ |
+| `gfmodel` | GLM-5.3-Flash | 0.1 | 32,768 | ✅ |
+| `qmodel_latest` | **Qwen4-Max-Preview** 🆕 | **0.1** | 32,768 | ✅ |
+| `jmodel` | **Step-5-Preview** 🆕 | **0.3** | 32,768 | ✅ |
+| `kmodel_latest` | Kimi-K3.1-Pro | 1 | 16,384 | — |
+| `kmodel` | Kimi-K2.8-Preview | 0.8 | 16,384 | — |
+| `mmodel` | MiniMax-M3.1-Flash | 0.1 | **32,768** ⬆ | **✅** ⬆ |
+
+**与 2026-11-02 本地快照的差异（影响兜底表的只有这几条）**
+
+| Key | 变化 | 为什么值得记 |
+|-----|------|------|
+| `qfmodel` | 💰 price **0 → 0.1** | 限免结束。2026-11-02 记的"国际版唯一 0 价模型是 `qfmodel`"就此失效——**上游清单里已无 0 价模型**。兜底表留着 0，面板与首查前清单会继续宣称 Qwen3.8-Flash 免费，而实际每个请求都在扣 addon 积分（与 `dfmodel` 那次同一类静默计费） |
+| `qmodel_latest` | 显示名 Qwen3.7-Max → **Qwen4-Max-Preview**，price 0.5 → **0.1**，输出 16,384 → **32,768**，改为推理 | 同名 key 换了指向的模型；旧行既错价又少报一半输出上限 |
+| `jmodel` | 🆕 Step-5-Preview，0.3 / 推理 / 32,768 | 兜底表原本没有它；运行时 `models.json` 的 `disabled` 也**没有** `jmodel`，即装上就默认可见 |
+| `mmodel` | 输出 16,384 → **32,768**，非推理 → **推理** | 客户端按 `MaxCompletionTokens` 夹输出，兜底值错会白夹一半 |
+
+**上游报的拥塞**：`qmodel_latest` / `jmodel` 当前"可受理但长时间排队"
+（`10605 isQueued`），上游定性为容量拥塞而非模型故障，建议错峰或调大
+`queue_wait_cap_sec`。
+
+**设备指纹与模型清单（`smodel`/`cmodel`/`fast` 消失的真相）**：上游同一提交指出，
+其账号清单里这三个"消失"**不是上游下线**，而是重新授权时 `checkin_fingerprint` 被
+覆盖丢失 ⇒ 退回旧协议（`clienttype=5` / `version=1.0.10`）⇒ 这三个不再下发。与本地
+结论一致：`modernFallbackModels` 只在 auth 里有真抓包指纹时才暴露。本部署 9 个账号
+全部无抓包指纹（用 `machine_salt` 派生），所以本来就拿不到这三个模型——这是既有状态，
+不是本轮回归。

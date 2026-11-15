@@ -160,6 +160,51 @@ cmd/cpa-plugin/
 
 ## 上游同步
 
+- 2026-11-14：合并上游 `adfb822..5bd4083`（`feat(bridge): refresh upstream model list
+  + fix re-auth wiping device fingerprint`，上游 2026-11-13 CN / 2026-11-14 Global
+  实拉）。merge `7b8cbb3`，3 处冲突。**未部署**：已构建 `dist/qoder-v0.1.8.so`，线上
+  仍是 `0.1.7`。
+  **插件路径真正受用的只有两条**：
+  1. `ListAvailableModels` 现在会在**本桥区域内**逐账号试错（上游以前只用池里第一个
+     坑位，一个死凭证 `403 Signature invalid` 就把 `/v1/models` 拖到静态兜底表）。
+     插件的 `model.for_auth`（`models.go`）和 `modelstate.go` 的目录刷新都走它。
+  2. `preserveDeviceIdentity()`：上游的 bug 在**独立服务**路径——
+     `buildAccountFromToken` 造全新 `Account` 后直接覆盖账号文件，抹掉
+     `checkin_fingerprint`/`device_identity` ⇒ 退回旧协议（5 / 1.0.10）⇒
+     Sonus/Cantus/Fast 静默消失。本地把构造拆到了 `BuildAccountFromToken`（插件共
+     用），所以调用落在**唯一会覆盖账号文件的** `buildAccountFromToken` 上。插件本身走
+     不到这里：凭证存在 host auth store，且 host 保存时会把旧文件里非凭证类的 key 合
+     并回来（v8.0.43 源：`saveTokenRecord` → `mergeExistingAuthFileMetadata` →
+     `MergeExistingAuthMetadata`，只跳过 `IsAuthTokenPayloadKey`），而线上 9 个账号根本
+     没有抓包指纹（bridge 用 `settings.json` 的 `machine_salt` 稳定派生）。⇒
+     **插件侧无需额外端口**；但若以后给某个 Intl 账号写入抓包指纹，这条要在真 8.0.7x
+     host 上重验一次。
+  3. `claude.go` `HandleListModels` 的兜底 key 清单改成 CN 快照（故意不含
+     `ultimate`/`efficient`/`smodel`/`cmodel`/`fast`）：不在插件路径上（只有
+     `service.go` 用它），插件自己的兜底表另见下条。
+  **按上游快照刷新本地兜底表 `fallbackModels`**（行为变更，与 2026-11-02 那次同
+  类）：`qfmodel` 0 → 0.1（限免结束 ⇒ **表里已无任何 0 价模型**，留着 0 就是面板/首查
+  前清单宣称免费而实际记账）、`qmodel_latest` 实为 Qwen4-Max-Preview（0.1 / 推理 /
+  32,768，旧行是 Qwen3.7-Max 0.5 非推理 16,384）、新增 `jmodel` Step-5-Preview
+  （0.3 / 推理 / 32,768）、`mmodel` 输出 16,384 → 32,768 且改为推理。新增
+  `TestFallbackCatalogHasNoFreeModel`（回退到 0 价即失败）与
+  `TestFallbackCatalogMatches20261114Snapshot`，`TestFallbackDeepSeekNotFree` 去掉已过
+  时的 `qfmodel=0` 断言。快照来自上游实拉，本仓库未独立重拉（首次真查询会用活清单覆
+  盖兜底表），细节见 `docs/upstream-notes.md`。
+  **部署前必读**：运行时 `~/.qoder2api-cpa/models.json` 的 `disabled` 里**没有**
+  `jmodel`，装上 0.1.8 后它对客户端就默认可见；上游当时报 `qmodel_latest`/`jmodel`
+  正拥塞（10605 `isQueued`，属容量不是故障）。要保守就先把 `jmodel` 加进 `disabled`
+  再装产物。本轮**没有**新的「缺字段 = 默认开」配置项（上游只动
+  `oauth.go`/`bridge.go`/`claude.go`/`service.go`/控制台，`settings.json` 字段零变化）。
+  冲突处理：README 取本地精简版（上游 1036 行版丢弃）；`account/oauth.go` 保住
+  `BuildAccountFromToken` 导出形态；`bridge.go` 两个结构体字段都留（上游
+  `modelListURL` + 本地 `email`），本地 `Identity()`/`Email()`/`Region()`（含 nil 守
+  卫、`RegionGlobal` 默认）盖掉上游裸访问器。§3 承重墙所在文件（`pool.go`/
+  `queue.go`、`account/model.go`、`errors.go`、`cmd/cpa-plugin/` 除 `models.go`）本轮
+  上游零改动。验证：`go build/vet ./...`、`go test ./...` 全绿（含上游新增
+  `oauth_fingerprint_test.go`、`modellist_failover_test.go`），`-race` 见下；产物内
+  `0.1.8` 命中 4 次、`0.1.7` 命中 0 次。
+
 - 2026-11-09：合并 `ce6ae9d..adfb822`（`feat(bridge): traffic guard, risk-control
   hardening + security audit fixes`——账号池风控 + 本地封控一整轮，含随提交一起进来的
   `docs/audit-2026-11.md` 安全审计 P1/P2/P3 修复；该审计自己的总结论是「**不建议直接上
