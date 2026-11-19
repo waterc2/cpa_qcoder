@@ -12,8 +12,14 @@
 > 不受 `MaxQueueWait` / `PerAccountQueueWait` 封顶（实测连等 6 次 ≈2m30s 不上抛），导致
 > host 拿不到失败信号、**无法回落到 CodeBuddy**；同时插件从未调用
 > `bridge.ApplyQueueSettings`，`settings.json` 的 `queue_*` 字段在插件里是空转（见 §3 第 7、8 条）。
-> 版本 `0.1.8 → 0.1.9 → 0.1.10`，**已构建 `dist/qoder-v0.1.10.so`，尚未部署**。
-> 逐轮明细见 README「上游同步」节 2026-11-18 两条。
+> 版本 `0.1.8 → 0.1.9 → 0.1.10`，**已于 2026-11-18 21:09:36 部署（pid 2466 → 16843），
+> 21:14:20 仅改排队 env 再重启一次（→ 18885）**：
+> `QODER2API_QUEUE_MAX_WAIT 90s→15s`、`PER_ACCOUNT_WAIT 30s→10s`（只修 deadline 不够，
+> host 会逐 qoder 账号重试，90s × 9 个会先耗尽客户端）。上游仍在排队时实测：修复前客户端
+> `499 | 2m50s`，现在首个 16.4s、后续 1.49s / 0.94s，均落到 CodeBuddy。
+> ⚠️ `start_cpa.sh` 里是 `${QODER2API_QUEUE_MAX_WAIT:-"90s"}`，未 export 就默默回到 90s/30s。
+> 逐轮明细（含哪半边在插件路径上是死代码、两处有意覆盖上游的本地分歧）见 README
+> 「上游同步」节 2026-11-18 两条。
 > 逐轮明细（含两处有意覆盖上游的本地分歧、上游哪半边在插件路径上是死代码）见 README
 > 「上游同步」节 2026-11-18 条；上一轮 2026-11-14（`0.1.8`，**当前线上版本**）同节。
 > 线上 `settings.json` 的钉值（`traffic_guard=false`、`auto_throttle=false`、

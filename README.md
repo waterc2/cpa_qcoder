@@ -197,7 +197,41 @@ cmd/cpa-plugin/
   只是排队时不再占住请求 30 分钟。要调快/调慢：`QODER2API_QUEUE_MAX_WAIT` /
   `QODER2API_QUEUE_PER_ACCOUNT_WAIT`（env，需重启）或 `settings.json` 的 `queue_*`（本轮起生效）。
   §3 承重墙未动，并已把新增的 `deadline` 参数与 `queue_settings.go` 列入§3 第 7、8 条（上游签名里没有，
-  合并时不要丢）。行为变更 ⇒ `0.1.9 → 0.1.10`，**已构建 `dist/qoder-v0.1.10.so`**。
+  合并时不要丢）。行为变更 ⇒ `0.1.9 → 0.1.10`。
+
+  **部署（2026-11-18 21:09 / 21:14）**：`qoder-v0.1.8.so` 改名为
+  `qoder-v0.1.8.so.bak-pre-queue-deadline-20261118-210932.so`，拷入
+  `qoder-v0.1.10.so`（sha256 `db91d1ce…020aeba4`，与构建产物一致；`go version -m`
+  为 `vcs.revision=1387348`、`vcs.modified=false`、`-X main.pluginVersion=0.1.10`，
+  产物内 `0.1.9`/`0.1.8` 字样均为 0）。**两次重启**（均从 `/proc/<pid>/environ` 读回原环境，
+  日志先备份，均经 `cpa-restart.sh` 同语义路径）：
+  1. 21:09:36 加载新插件：pid 2466 → **16843**，`plugin loaded` 与 `registered` 都是 **0.1.10**，
+     host 8.0.78 不变（`/proc/<pid>/exe` 无 `(deleted)`），healthz 200，`/v1/models` 64。
+  2. 21:14:20 **仅改排队 env**：pid 16843 → **18885**。
+     `QODER2API_QUEUE_MAX_WAIT 90s → 15s`、`QODER2API_QUEUE_PER_ACCOUNT_WAIT 30s → 10s`
+     （breaker 两项不变：`2` / `10m`）。因为只修 deadline 还不够：host 拿到 503 后会
+     **接着试下一个 qoder 账号**，9 个账号 × 90s 会把客户端耗死（实测第一次裸名请求
+     150s 超时、插件侧 `499 | 2m50s`）。
+
+  **效果（实测，上游仍在排队期间）**：
+  | 阶段 | 结果 |
+  |---|---|
+  | 修复前（0.1.8，真队列） | 同账号 `try 6 ≈2m30s` 不上抛，客户端 `499 \| 2m50s`；`-sg` 同刻 200/1.77s |
+  | 只修 deadline（MAX_WAIT=90s） | 200，但 **137s** 才落到 CodeBuddy（host 逐账号累加） |
+  | + env 收紧（15s/10s） | 首个请求 **16.4s**，后续 **1.49s / 0.94s**，全部 `served by deepseek-v4.1-flash-sg` |
+  | breaker | 21:17:03 `level=1 cooldown_until=21:27:03`；21:17:17 `diverting new session … auth=workbuddy-095b7a22…` |
+
+  即：**Qoder 仍是首选**（breaker 冷却 10m 到点后会再试，上游恢复就拿回流量），只是排队时
+  不再拿住请求。启动日志现在会直接打出生效值：
+  `queue slot deadline for this plugin: max_wait=15s per_account_wait=10s`。
+
+  ⚠️ **两个坑，下次重启前必看**：
+  - `/home/brady/tool/start_cpa.sh` 写的是 `${QODER2API_QUEUE_MAX_WAIT:-"90s"}` 这类**默认值**。
+    `cpa-restart.sh` 继承存活进程环境（会带走 15s/10s），但若有人直接跑 `start_cpa.sh`
+    且 shell 里没 export，就会**默默回到 90s/30s**。本轮**没有改** `start_cpa.sh`，要么 export
+    要么自己改默认值。本轮只修 deadline 不收紧 env 也能回落，只是会慢到分钟级。
+  - 重启会清空 session-affinity（插件侧 1h TTL）与 breaker 内存态：本轮上游拥塞期间，
+    重启后第一个请求要重新走一遍「排队→放弃→回落」（实测 ≈16s）才能重新让 breaker 转走。
 
 - 2026-11-18：合并上游 `5bd4083..c8e0aea`（`fix(bridge): map display names to real keys
   (issue #13) + fix cooldown table layout`，上游 2026-11-19）。merge `0e43945`，**1 处冲突**
