@@ -498,7 +498,7 @@ func TestStreamWithSlotFakeQueueIgnoresWaitFirstToken(t *testing.T) {
 	start := time.Now()
 	emitted, err := b.streamWithSlot(ctx, slot, []string{srv.URL},
 		map[string]interface{}{"model_config": map[string]interface{}{"key": "qfmodel"}},
-		nil, func(Delta) {})
+		nil, time.Time{}, func(Delta) {})
 	if emitted {
 		t.Fatal("should not have emitted any delta")
 	}

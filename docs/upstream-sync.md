@@ -6,9 +6,14 @@
 >
 > 部署总览见 `/home/brady/tool/README-cpa.md`。
 >
-> 最近执行：**2026-11-18**，`origin/main` 新提交 `c8e0aea`「显示名 → 真 key（issue #13）+
-> 控制台冷却表格修复」——**已合并**（merge `0e43945`，1 处冲突：README 取本地精简版），
-> 版本 `0.1.8 → 0.1.9`，**已构建 `dist/qoder-v0.1.9.so`，尚未部署**。承重墙（§3）零改动。
+> 最近执行：**2026-11-18**（同日两轮）。第一轮：`origin/main` 新提交 `c8e0aea`「显示名 → 真 key
+> （issue #13）+ 控制台冷却表格修复」**已合并**（merge `0e43945`，1 处冲突：README 取本地精简版）。
+> 第二轮：上游无新提交，修**本地**排队语义——真队列时 `streamWithSlot` 内的同账号等待
+> 不受 `MaxQueueWait` / `PerAccountQueueWait` 封顶（实测连等 6 次 ≈2m30s 不上抛），导致
+> host 拿不到失败信号、**无法回落到 CodeBuddy**；同时插件从未调用
+> `bridge.ApplyQueueSettings`，`settings.json` 的 `queue_*` 字段在插件里是空转（见 §3 第 7、8 条）。
+> 版本 `0.1.8 → 0.1.9 → 0.1.10`，**已构建 `dist/qoder-v0.1.10.so`，尚未部署**。
+> 逐轮明细见 README「上游同步」节 2026-11-18 两条。
 > 逐轮明细（含两处有意覆盖上游的本地分歧、上游哪半边在插件路径上是死代码）见 README
 > 「上游同步」节 2026-11-18 条；上一轮 2026-11-14（`0.1.8`，**当前线上版本**）同节。
 > 线上 `settings.json` 的钉值（`traffic_guard=false`、`auto_throttle=false`、
@@ -57,6 +62,11 @@ git status --short | grep '^UU'      # 冲突文件
    "`ErrTypeUpstreamQueue` → 一律不换号"的短路，**不采纳**。本地架构里同账号
    等待已在 `streamWithSlot` 内有界完成；错误若仍上抛，说明是假队列或单账号
    排队预算（`PerAccountQueueWait`）耗尽，外层账号池**必须能换号**。
+   ⚠️ 2026-11-18：上面那句「有界完成」在插件部署里**此前是假的**——
+   `streamWithSlot` 的等待循环只认 `QueueWaitBudget`（默认 30 分钟），外层算好的
+   `MaxQueueWait` / `PerAccountQueueWait` 截止时刻在这一层完全不生效，真队列时
+   实测同账号连等 6 次 ≈2m30s 仍不上抛 → host 拿不到失败信号 → **无法回落其它
+   provider**（见第 7 条与 README 2026-11-18 条）。现已用 `deadline` 参数修正。
 2. **`internal/bridge/queue.go` `queueWorthSameAccountRetry`**：真队列
    （queueCount>0 或 serviceAvailable）才消耗同账号重试；假队列
    （queueCount=0 且 serviceAvailable=false）直接上抛给 `streamWithQueueRecovery`
@@ -79,6 +89,18 @@ git status --short | grep '^UU'      # 冲突文件
    HTTP body 原文，无日志前缀）；`errors_test.go` 的 `nestedResourceLimitDetail`
    helper 带 `"upstream 403: "` 前缀，只供 `parseUpstreamNestedError` 类测试用，
    不能直接喂给队列解析。
+7. **`streamWithSlot` 的 `deadline` 参数（本地新增，2026-11-18）**：上游签名里
+   **没有** `deadline`，合并时不要丢。它把外层的 `MaxQueueWait` / `PerAccountQueueWait`
+   截止时刻传进同账号等待循环，并在 **sleep 之前**判定（等完再看会白等一整个
+   `retryAfter`）。零值 = 不限，只由 `QueueWaitBudget` 兜底——`queue_budget_test.go`
+   就是靠传零值把这一层单独测出来。回归用例：`TestQueueSameAccountWaitRespectsSlotDeadline`
+   （去掉修复会一路睡到测试超时）。
+8. **`cmd/cpa-plugin/queue_settings.go` `applyQueueSettingsFromSettings`（本地新增）**：
+   上游只在 `service.go` / `main.go`（独立服务）里调 `bridge.ApplyQueueSettings`，
+   插件没有监听端口也没有那条路径 ⇒ `settings.json` 的 `queue_*` 字段在插件里
+   原本是**纯装饰**。上游合并不会补这个调用，别把它当冗余删掉。回归：
+   `TestApplyQueueSettingsWiredIntoConfigure`（钉住 `configure()` 里的调用点在
+   early-return **之前**）。
 
 合并提交信息里写清：合了什么、解了哪些冲突、做了哪些语义适配
 （参考 `eb30419` 的提交信息格式）。

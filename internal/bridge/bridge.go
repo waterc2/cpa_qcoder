@@ -890,11 +890,16 @@ func (b *Bridge) decorateCredentialError(err error, model string) error {
 //     后重试。换号无益（同模型同队列），故不在此层换号。
 //     次数上限看 QueueWaitFirstToken：ON=首字前一直等（只由 ctx 取消/客户端断开
 //     停止），OFF=最多 QueueMaxRetries 次。
+//     **等待同时受 deadline 封顶**（零值 = 不限，只由 QueueWaitBudget 兜底）：
+//     调用方（streamWithQueueRecovery / CallQoderWithOpts）据此把
+//     MaxQueueWait 与 PerAccountQueueWait 传下来，见下方截止判定。
+//
+// deadline 是调用方的排队截止时刻（单账号槽位级），零值表示不限。
 //  2. 瞬时故障重试（streamWithTransientRetry）：连接/418/5xx，最多 TransientMaxRetries 次。
 //
 // 返回是否已向 onDelta 发出过内容——上层据此决定能否换号（已发出内容则不能，
 // 否则客户端会收到重复内容）。
-func (b *Bridge) streamWithSlot(ctx context.Context, slot *Slot, qurls []string, body map[string]interface{}, extra map[string]string, onDelta func(Delta)) (bool, error) {
+func (b *Bridge) streamWithSlot(ctx context.Context, slot *Slot, qurls []string, body map[string]interface{}, extra map[string]string, deadline time.Time, onDelta func(Delta)) (bool, error) {
 	model := modelKeyFromBody(body)
 	queueTries := 0
 	totalWait := time.Duration(0)
@@ -959,6 +964,18 @@ func (b *Bridge) streamWithSlot(ctx context.Context, slot *Slot, qurls []string,
 			// 总预算兜底：即使「首字前一直等」也不能无限挂起——客户端连接
 			// 与账号配额都被白白占用。超过预算按拥塞（503）上抛。
 			wait := queueRetryAfter(err)
+			// 截止判定（本地语义，2026-11-18）：同账号等待必须尊重调用方给的
+			// 截止时刻。这一层此前只认 QueueWaitBudget（默认 30 分钟），而外层算好的
+			// MaxQueueWait / PerAccountQueueWait 截止时刻在这一层**完全不起作用**。
+			// 实测：上游真队列（前方约 1 人）时同账号连等 6 次 ≈2m30s 仍不上抛，
+			// host 拿不到失败信号 → 无法回落到其它 provider（workbuddy），
+			// 客户端只能挂到自己断开（app.log 里的 `499 | 2m27s`）。
+			// 必须在 sleep **之前**判：等完再看会白等一整个 retryAfter。
+			if !deadline.IsZero() && !time.Now().Add(wait).Before(deadline) {
+				logger.Info("upstream queued, giving up at slot deadline (waited ~%s over %d tries, deadline %s; surfacing to caller for failover): %v",
+					totalWait, queueTries+1, deadline.Format(time.RFC3339), err)
+				return finish(WaitOutcomeGaveUp, emitted, err)
+			}
 			if totalWait+wait > QueueWaitBudget {
 				logger.Info("upstream queued, giving up: waited %s over %d tries, budget %s exhausted: %v",
 					totalWait, queueTries+1, QueueWaitBudget, err)

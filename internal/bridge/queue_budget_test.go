@@ -47,11 +47,10 @@ func TestQueueWaitBudgetExhaustedGivesUp(t *testing.T) {
 	b := newAffinityBridge(t, srv.URL, "budget-only")
 	body := map[string]interface{}{"model_config": map[string]interface{}{"key": "auto"}}
 	start := time.Now()
-	// 直接测 streamWithSlot：QueueWaitBudget 是这一层的兜底。走
-	// CallQoderWithOpts 会先经过 streamWithQueueRecovery（本地模型队列层，
-	// 自带 PerAccountQueueWait / MaxQueueWait 截止时间），两层各有一套等待
-	// 记账，命中次数与耗时就不再只由这一层的预算决定。
-	_, err := b.streamWithSlot(context.Background(), b.pool.slots[0], []string{srv.URL}, body, nil, func(Delta) {})
+	// 直接测 streamWithSlot：QueueWaitBudget 是这一层的兜底，传零值 deadline
+	// 把外层的 MaxQueueWait / PerAccountQueueWait 截止关掉，否则命中次数与
+	// 耗时就同时由两层等待记账决定，测不到这一层。
+	_, err := b.streamWithSlot(context.Background(), b.pool.slots[0], []string{srv.URL}, body, nil, time.Time{}, func(Delta) {})
 	elapsed := time.Since(start)
 
 	if err == nil {
@@ -88,7 +87,7 @@ func TestQueueWaitBudgetAccumulatesSmallWaits(t *testing.T) {
 	b := newAffinityBridge(t, srv.URL, "budget-acc")
 	body := map[string]interface{}{"model_config": map[string]interface{}{"key": "auto"}}
 	start := time.Now()
-	_, err := b.streamWithSlot(context.Background(), b.pool.slots[0], []string{srv.URL}, body, nil, func(Delta) {})
+	_, err := b.streamWithSlot(context.Background(), b.pool.slots[0], []string{srv.URL}, body, nil, time.Time{}, func(Delta) {})
 	elapsed := time.Since(start)
 
 	if err == nil {

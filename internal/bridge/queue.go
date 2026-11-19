@@ -424,7 +424,7 @@ func (b *Bridge) streamWithQueueRecovery(ctx context.Context, slot *Slot, qurls 
 	retriedAfterAvailable := false
 	startedAt := time.Now()
 	for {
-		emitted, err := b.streamWithSlot(ctx, slot, qurls, body, extra, onDelta)
+		emitted, err := b.streamWithSlot(ctx, slot, qurls, body, extra, deadline, onDelta)
 		emittedAny = emittedAny || emitted
 		if err == nil {
 			if queuedOnce {

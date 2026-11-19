@@ -160,6 +160,45 @@ cmd/cpa-plugin/
 
 ## 上游同步
 
+- 2026-11-18（同日第二轮）：上游 `origin/main` **无新提交**（`c8e0aea` 已是最新）。
+  本轮修**本地语义缺陷**——现场：调用方请求 `deepseek-v4.1-flash` 挂 2.5 分钟后自己断开
+  （`app.log`: `499 | 2m27s`），而同一时刻 `deepseek-v4.1-flash-sg`（CodeBuddy）实测 **200 / 1.77s**。
+  **两个独立问题**：
+
+  1. **真队列时同账号等待不封顶 → host 无法回落其它 provider**。
+     `streamWithSlot` 的等待循环只看 `QueueWaitBudget`（默认 **30 分钟**），而外层
+     `CallQoderWithOpts` 算好的 `queueDeadline`（`QODER2API_QUEUE_MAX_WAIT`）与
+     `slotDeadline`（`QODER2API_QUEUE_PER_ACCOUNT_WAIT`）传进了 `streamWithQueueRecovery`
+     却**从没传进这个循环**。插件日志坐实：
+     `20:42:29 try 1 … budget 30m0s` → `20:45:02 try 6, waited ~2m30s, budget 30m0s`。
+     插件不返回错误，host 就**拿不到失败信号**，永远轮不到 CodeBuddy；而 breaker
+     （`BREAKER_SESSIONS=2`）只能转**新会话**，管不了已挂住的那个。
+     **修**：给 `streamWithSlot` 加 `deadline` 参数，在 **sleep 之前**判定
+     （等完再看会白等一整个 `retryAfter`）；零值 = 不限，保持 `queue_budget_test.go`
+     能单独测预算这一兜底。效果：上游真排队时最多等 `PerAccountQueueWait`/`MaxQueueWait`
+     就把 503 交给 host，由 host 回落到 CodeBuddy（对照组：15:25:59 假队列 → 503 →
+     **5.1s 内 host 落到 workbuddy 拿 200**）。
+     回归：`TestQueueSameAccountWaitRespectsSlotDeadline`（**拆掉修复就会一路睡到测试超时**）、
+     `TestQueueDeadlineDoesNotCutShortWhenGenerous`（反向护栏：宽松截止时仍照常重试，
+     不能把“逢队列就秒失败”当成修好了）、`TestQueueRecoverySurfacesQueueErrorToCaller`。
+  2. **`settings.json` 的 `queue_*` 字段在插件模式里是纯装饰**。
+     `bridge.ApplyQueueSettings` 是改这些包级变量的唯一入口，而它**只被 `service.go` /
+     `main.go`（独立服务）调用**，`cmd/cpa-plugin/` 里从没调过；插件也没有监听端口/控制台
+     去触发它。⇒ operator 写进 `settings.json` 的排队参数全部静默失效，行为永远等于包级默认
+     （`QueueWaitFirstToken=true`、`QueueWaitBudget=30m`）。
+     **修**：`applyQueueSettingsFromSettings()` 在 `configure()` 里下发（**在 `len(raw)==0`
+     的 early-return 之前**，空 config 也要生效）+ 启动日志把 `max_wait` / `per_account_wait`
+     一起打出来。**没改任何默认值**（缺字段仍回 bridge 默认，`TestApplyQueueSettingsAbsentKeepsBridgeDefaults`
+     钉住），只是让显式配置真的能到插件。
+     回归：`TestApplyQueueSettingsFromSettings` + `TestApplyQueueSettingsWiredIntoConfigure`
+     （后者钉住**接线本身**——把 `configure()` 里的调用注掉就失败，因为真正的回归就是“忘了调”）。
+
+  **注意**：这不是“跳过 Qoder”。Qoder 仍是裸名 `deepseek-v4.1-flash` 的首选（`dfmodel` 单价更低），
+  只是排队时不再占住请求 30 分钟。要调快/调慢：`QODER2API_QUEUE_MAX_WAIT` /
+  `QODER2API_QUEUE_PER_ACCOUNT_WAIT`（env，需重启）或 `settings.json` 的 `queue_*`（本轮起生效）。
+  §3 承重墙未动，并已把新增的 `deadline` 参数与 `queue_settings.go` 列入§3 第 7、8 条（上游签名里没有，
+  合并时不要丢）。行为变更 ⇒ `0.1.9 → 0.1.10`，**已构建 `dist/qoder-v0.1.10.so`**。
+
 - 2026-11-18：合并上游 `5bd4083..c8e0aea`（`fix(bridge): map display names to real keys
   (issue #13) + fix cooldown table layout`，上游 2026-11-19）。merge `0e43945`，**1 处冲突**
   （README 取本地精简版）。**已构建 `dist/qoder-v0.1.9.so`，尚未部署**（等确认）。

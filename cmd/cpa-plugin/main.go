@@ -83,7 +83,7 @@ const (
 )
 
 // pluginVersion is the release version. Overridable with -ldflags -X.
-var pluginVersion = "0.1.9"
+var pluginVersion = "0.1.10"
 
 // hostAPI is the host function-pointer table captured at init. It is used for
 // async host calls (host.stream.emit / host.stream.close / host.auth.*).
@@ -354,6 +354,10 @@ func pluginRegistration() registration {
 // configs.qoder) depending on host version.
 func configure(raw []byte) {
 	initDataDir()
+	// settings.json 里的排队参数必须在插件侧手动下发（上游只在独立服务模式里调
+	// ApplyQueueSettings），否则插件永远用包级默认值。必须在下面的 early-return
+	// 之前：空 config（纯 plugin.register）也该生效。
+	applyQueueSettingsFromSettings()
 	if len(raw) == 0 {
 		return
 	}
