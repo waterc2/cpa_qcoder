@@ -6,29 +6,11 @@
 >
 > 部署总览见 `/home/brady/tool/README-cpa.md`。
 >
-> 最近执行：**2026-11-14**，上游 `origin/main` 新提交 `5bd4083`「模型清单刷新 + 重新授权
-> 抹掉设备指纹修复」——**已合并**（merge `7b8cbb3`，3 处冲突：README 取本地精简版；
-> `account/oauth.go` 保住本地 `BuildAccountFromToken` 拆分并把 `preserveDeviceIdentity`
-> 放进唯一覆盖账号文件的 `buildAccountFromToken`；`bridge.go` 保住本地 `Identity()`/
-> `Email()`/`Region()` 的 nil 守卫与 `email` 字段）。§3 承重墙所在文件（`pool.go`/
-> `queue.go`、`account/model.go`、`errors.go`、`cmd/cpa-plugin/`）本轮上游零改动。
-> 另按上游 2026-11-14 实拉快照刷新插件兜底表 `fallbackModels`：`qfmodel` 限免结束
-> 0→0.1（**这张表里已经没有任何 0 价模型**）、`qmodel_latest` 实为 Qwen4-Max-Preview
-> （0.1 / 推理 / 32K）、补 `jmodel` Step-5-Preview、`mmodel` 输出 16K→32K 且改推理。
-> 行为变更 ⇒ 版本 `0.1.7 → 0.1.8`，构建 `dist/qoder-v0.1.8.so`，**已于 2026-11-14
-> 19:49:47 部署**（`0.1.7` 备份
-> `qoder-v0.1.7.so.bak-pre-5bd4083-catalog-20261114-194924`；从 `/proc/2595/environ`
-> 读回原环境与原 argv 后 `kill -TERM` + 纯重启，不经 `start_cpa.sh`；pid 2595 →
-> **85036**；`QODER2API_QUEUE_*` 四项原样：`90s`/`30s`/`2`/`10m`）。验证：loaded 与
-> registered 都是 `0.1.8`、四个插件全注册、`/v1/models` 200/63、**重启前后 9 个
-> `machineid` 完全一致（零指纹漂移）**。**不需要改 `~/.qoder2api-cpa/models.json`**：
-> 担心 `jmodel` 装上即默认可见，但实测 `/v1/models` 里没 `jmodel`——插件从上游拉到的
-> **活**清单本身就没下发它，新兜底表只在首查前/上游不可达时生效。
-> 部署当下 `qfmodel` 上游拥塞（`403 / CALL_COUNT_LIMIT` 真队列），插件同账号等 30s
-> 重试、会话亲和保持，客户端 150s 断开后**重试循环自行停下**——修正 2026-11-10
-> 「客户端断开不会取消插件侧等待」那条（host 8.0.71 + 0.1.8 上取消会传播）。本轮无新增「缺字段=默认开」的配置项（上游只动 `oauth.go`/
-> `bridge.go`/`claude.go`/`service.go`/控制台，`settings.json` 字段零变化）。
-> 历史逐轮记录见 README「上游同步」节（2026-11-14 / 11-09 / 11-02 / 10-30 / 10-27 / 10-23）；
+> 最近执行：**2026-11-18**，`origin/main` 新提交 `c8e0aea`「显示名 → 真 key（issue #13）+
+> 控制台冷却表格修复」——**已合并**（merge `0e43945`，1 处冲突：README 取本地精简版），
+> 版本 `0.1.8 → 0.1.9`，**已构建 `dist/qoder-v0.1.9.so`，尚未部署**。承重墙（§3）零改动。
+> 逐轮明细（含两处有意覆盖上游的本地分歧、上游哪半边在插件路径上是死代码）见 README
+> 「上游同步」节 2026-11-18 条；上一轮 2026-11-14（`0.1.8`，**当前线上版本**）同节。
 > 线上 `settings.json` 的钉值（`traffic_guard=false`、`auto_throttle=false`、
 > `session_affinity=true`+1800s、`max_output_tokens=131072`、`tool_result_bytes=1048576`、
 > `tool_result_total_bytes=4194304`、`machine_salt` 勿动）以文件本身为准。

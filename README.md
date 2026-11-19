@@ -160,6 +160,38 @@ cmd/cpa-plugin/
 
 ## 上游同步
 
+- 2026-11-18：合并上游 `5bd4083..c8e0aea`（`fix(bridge): map display names to real keys
+  (issue #13) + fix cooldown table layout`，上游 2026-11-19）。merge `0e43945`，**1 处冲突**
+  （README 取本地精简版）。**已构建 `dist/qoder-v0.1.9.so`，尚未部署**（等确认）。
+  **修的是什么**（issue #13「调模型经常排队甚至 429；即使调用成功 qoder 也不显示有额度」）：
+  `MapModel` 以前只认 Claude/GPT/Gemini 关键字，其余一律 `ToLower` 后原样发给上游。
+  客户端传**显示名**（`Qwen4-Max-Preview`）时上游收到的是一个不存在的 key，而**上游对未知
+  key 走兜底返回内容、但不把这次调用计入 quota**——所以「请求成功却没用量」，且这类流量
+  没有真实配额支撑，更容易被限流 → 排队 / 429。新增第 6 步 `upstreamDisplayNameAliases`
+  （显示名 / 简写 → key，歧义时宁可不猜）+ `IsKnownUpstreamKey`（未知 key 打 **WARN**，
+  只告警不拦截）。
+  **本地语义零受损**：§3 承重墙（`pool.go` `ShouldFailover` / `queue.go`
+  `queueWorthSameAccountRetry` / `account/model.go` `QuotaInfo` / `CallOpts`）本轮上游零改动，
+  `bridge.go` 自动合并后 `SkipModelMap` 与新增 WARN 的先后关系正确（WARN 在映射之后，
+  插件路径 `SkipModelMap=true` 时校验的是插件解析出来的真 key）。
+  **两处本地分歧（有意覆盖上游）**：
+  1. `knownUpstreamKeys` 补 `performance` / `qmodel`。上游快照漏了这两个真实 SKU，而插件
+     回退清单（`cmd/cpa-plugin/models.go`）就在 advertise 它们（Global 当前不下发、CN 仍会
+     协商到）。不补的话，一旦重新启用 `performance` 就会**每请求**打一条「不计 quota」的
+     假警报，把真信号淹成噪声。`TestAdvertisedModelsAreKnownKeys` 锁死这条不变式。
+  2. `defaultModelMapping` 上「本表故意不认显示名」的旧注释已改正（显示名现在由第 6 步兜底）。
+  **新增测试**：`internal/bridge/model_alias_test.go`（上游）+ `cmd/cpa-plugin/model_knownkey_test.go`
+  （本地：本插件 advertise 的每个 key 必须是已知上游 key；每个 advertise 的**显示名**必须落回
+  自己那一档的 key——落错档会烧别的模型的额度，比原 bug 更糟）。
+  **本轮不生效的部分**：`webconsole/index.html` 的冷却态表格错位 / `16m14s` 时长格式 / 模型
+  冷却列明细——插件没有监听端口，控制台那半边在插件路径上是死代码（合入只为不让分支与
+  上游越拉越远）。上游别名表里指向已下线 key 的三行（`qwen3.7-plus`→`qmodel`、
+  `qwen3.7-flash`→`q37fmodel`、`glm-5.2`→`gm51model`）保留但不进 `knownUpstreamKeys`：
+  命中它们时那条 WARN 是**对的**（下线的 key 本就不计费）。
+  **部署前须知**：本轮无新增「缺字段=默认开」的配置项（上游只动 `bridge.go` /
+  `model_alias_test.go` / `webconsole` / README，`settings.json` 字段零变化）；`go test ./...`
+  全绿（`internal/bridge` 82.9s）。
+
 - 2026-11-14：合并上游 `adfb822..5bd4083`（`feat(bridge): refresh upstream model list
   + fix re-auth wiping device fingerprint`，上游 2026-11-13 CN / 2026-11-14 Global
   实拉）。merge `7b8cbb3`，3 处冲突。**已于 2026-11-14 19:49:47 部署**：旧产物改名
